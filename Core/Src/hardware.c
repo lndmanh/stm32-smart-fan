@@ -16,6 +16,7 @@ void Set_Motor_Output(int32_t u) {
 
 void System_Init(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
     RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN | RCC_APB1ENR_TIM3EN;
 
