@@ -1,3 +1,18 @@
+/******************************************************************************
+ * sensor.c
+ *
+ * Temperature acquisition and filtering module.
+ *
+ * Functions called by main.c:
+ *   - Sensor_Init()
+ *   - Sensor_ReadTemperature()
+ *
+ * Features:
+ *   - DS18B20 temperature reading
+ *   - Moving Average Filter
+ *
+ ******************************************************************************/
+
 #include "main.h"
 
 #define DS18B20_PORT GPIOA
