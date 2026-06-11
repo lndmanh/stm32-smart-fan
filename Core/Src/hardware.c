@@ -1,6 +1,9 @@
 #include "hardware.h"
 #include "stm32f401xe.h"
-#include "system_config.h"
+
+#define SYS_CLOCK       16000000U
+#define PWM_FREQ        10000U
+#define PWM_ARR         ((SYS_CLOCK / PWM_FREQ) - 1U)
 
 void Set_Motor_Output(int32_t u) {
     if (u >= 0) {

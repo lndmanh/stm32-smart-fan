@@ -1,7 +1,18 @@
 #include "pid_controller.h"
 #include "hardware.h"
 #include "stm32f401xe.h"
-#include "system_config.h"
+
+#define SYS_CLOCK        16000000U
+#define PWM_FREQ         10000U
+#define PWM_ARR          ((SYS_CLOCK / PWM_FREQ) - 1U)
+
+#define TS_SEC           0.01f
+#define PPR              2800.0f
+
+#define PID_SETPOINT_RPM 50.0f
+#define PID_KP           8.0f
+#define PID_KI           30.0f
+#define PID_KD           0.5f
 
 volatile float setpoint = PID_SETPOINT_RPM;
 volatile float current_speed = 0.0f;
@@ -12,12 +23,7 @@ static float i_term = 0.0f;
 static float last_speed = 0.0f;
 static int32_t last_encoder_cnt = 0;
 
-void TIM3_IRQHandler(void) {
-    if ((TIM3->SR & TIM_SR_UIF) == 0U) {
-        return;
-    }
-
-    TIM3->SR &= ~TIM_SR_UIF;
+void PID_Control_Update(void) {
     data_time_ms += 10U;
 
     int32_t current_cnt = (int32_t)TIM2->CNT;

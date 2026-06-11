@@ -22,6 +22,8 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "pid_controller.h"
+#include "stm32f401xe.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -199,5 +201,15 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+void TIM3_IRQHandler(void)
+{
+  if ((TIM3->SR & TIM_SR_UIF) == 0U)
+  {
+    return;
+  }
+
+  TIM3->SR &= ~TIM_SR_UIF;
+  PID_Control_Update();
+}
 
 /* USER CODE END 1 */
