@@ -94,7 +94,23 @@ Supported commands:
 - p35 -> set Kp
 - i100 -> set Ki
 - d0.5 -> set Kd
+- x -> stop fan by setting target speed to 0 RPM
 - r -> reset faults
+- ? -> print firmware command help
+
+Structured dashboard telemetry:
+
+```text
+FAN,<ms>,<rps>,<rpm>,<target_rpm>,<pwm>,<temp_c>,<fault_code>,<state>
+```
+
+Example:
+
+```text
+FAN,1200,2.50,150.0,180.0,512,36.7,0,RUN
+```
+
+`temp_c` is currently simulated in firmware so the monitoring dashboard can be used before a physical temperature sensor is added.
 
 ---
 
@@ -189,3 +205,34 @@ Avoid modifying:
 - generated startup code
 
 The control loop must remain interrupt-based with fixed sampling time.
+
+---
+
+# Desktop Dashboard App
+
+The Python app in `App/` is a Bluetooth/serial dashboard for live fan monitoring.
+
+Install dependencies:
+
+```bash
+pip install pyserial matplotlib
+```
+
+Run the dashboard:
+
+```bash
+python3 App/do_line.py
+```
+
+Run Python checks:
+
+```bash
+PYTHONPATH=App python3 -m unittest discover App/tests -v
+python3 -m py_compile App/*.py
+```
+
+Build firmware from STM32CubeIDE or with the generated Debug makefile after the local ARM GCC toolchain and linker script path are configured:
+
+```bash
+make -C Debug all
+```
