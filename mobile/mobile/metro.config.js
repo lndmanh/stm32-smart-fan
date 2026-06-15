@@ -7,7 +7,7 @@ config.resolver.extraNodeModules = {
   assert: require.resolve('./assert-shim.js'),
 };
 
-// Proxy /api/* to NestJS on localhost:3000 so the phone only needs Metro's port open.
+// forward /api sang backend local port 3000
 config.server = {
   ...config.server,
   enhanceMiddleware: (middleware) => {

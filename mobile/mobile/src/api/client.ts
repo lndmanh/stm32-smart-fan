@@ -17,15 +17,15 @@ function getMetroHost(): string | undefined {
 }
 
 export function getApiBaseUrl(): string {
-  const metroHost = getMetroHost();
-  if (metroHost) {
-    const [host, port] = metroHost.split(':');
-    return `http://${host}:${port ?? '8081'}`;
-  }
-
   const fromEnv = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '');
   if (fromEnv) {
     return fromEnv;
+  }
+
+  const metroHost = getMetroHost();
+  if (metroHost) {
+    const [host] = metroHost.split(':');
+    return `http://${host}:3000`;
   }
 
   if (Platform.OS === 'android' && !Constants.isDevice) {
