@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { SerialBridgeService } from '../device/serial-bridge.service';
 import { SettingsService } from '../settings/settings.service';
 import { StatusService } from '../status/status.service';
 import { TelemetryService } from '../telemetry/telemetry.service';
@@ -14,10 +15,15 @@ export class SimulatorService {
     private readonly statusService: StatusService,
     private readonly telemetryService: TelemetryService,
     private readonly settingsService: SettingsService,
+    private readonly serialBridge: SerialBridgeService,
   ) {}
 
   @Interval(3000)
   async simulateReading() {
+    if (this.serialBridge.isActive()) {
+      return;
+    }
+
     try {
       const current = await this.statusService.getStatus();
       const settings = await this.settingsService.getOrCreateSettings();

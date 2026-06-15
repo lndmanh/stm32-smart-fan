@@ -1,10 +1,14 @@
 import { Body, Controller, Get, Put } from '@nestjs/common';
+import { SerialBridgeService } from '../device/serial-bridge.service';
 import { UpdatePidSettingsDto } from './dto/update-pid-settings.dto';
 import { SettingsService } from './settings.service';
 
 @Controller('settings')
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly serialBridge: SerialBridgeService,
+  ) {}
 
   @Get('pid')
   getPidSettings() {
@@ -12,7 +16,11 @@ export class SettingsController {
   }
 
   @Put('pid')
-  updatePidSettings(@Body() dto: UpdatePidSettingsDto) {
-    return this.settingsService.updatePidSettings(dto);
+  async updatePidSettings(@Body() dto: UpdatePidSettingsDto) {
+    const saved = await this.settingsService.updatePidSettings(dto);
+    if (this.serialBridge.isActive()) {
+      await this.serialBridge.applyPidSettings(dto.kp, dto.ki, dto.kd);
+    }
+    return saved;
   }
 }

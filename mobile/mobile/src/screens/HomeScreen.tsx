@@ -55,6 +55,12 @@ export default function HomeScreen({
   const hasWarning = data.warning !== 'Không có';
   const fanModeLabel =
     data.controlMode === 'auto' ? 'Tự động theo nhiệt độ' : 'Điều khiển thủ công';
+  const sourceLabel =
+    data.dataSource === 'serial'
+      ? data.deviceConnected
+        ? 'STM32 đã kết nối'
+        : 'STM32 chưa kết nối'
+      : 'Mô phỏng backend';
 
   return (
     <View style={styles.container}>
@@ -73,6 +79,14 @@ export default function HomeScreen({
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
+
+      <View style={styles.sourceBanner}>
+        <Text style={styles.sourceText}>
+          {sourceLabel}
+          {data.rpm != null ? ` · ${data.rpm.toFixed(1)} RPM` : ''}
+          {data.state ? ` · ${data.state}` : ''}
+        </Text>
+      </View>
 
       <ScrollView
         style={styles.scroll}
@@ -232,6 +246,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFEBEE',
     paddingHorizontal: 16,
     paddingVertical: 10,
+  },
+  sourceBanner: {
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  sourceText: {
+    color: colors.green,
+    fontSize: 12,
+    fontWeight: '600',
   },
   errorText: {
     color: colors.red,

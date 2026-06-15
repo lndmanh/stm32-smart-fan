@@ -2,7 +2,7 @@
 
 Bài tập lớn môn **Cơ sở đo lường và điều khiển số**.
 
-App mobile xem nhiệt độ, tốc độ quạt, PWM. Backend xử lý dữ liệu và mô phỏng cảm biến (chưa nối phần cứng thật).
+App mobile xem nhiệt độ, tốc độ quạt, PWM. Backend có thể **mô phỏng** hoặc **nối STM32 thật** qua cổng COM.
 
 ## Công nghệ
 
@@ -93,11 +93,38 @@ npx expo start
 
 Quét QR bằng Expo Go, điện thoại và máy tính cùng WiFi.
 
+## Nối mạch STM32
+
+```
+STM32 (USART2 PA2/PA3) --USB-UART--> PC (COMx) --backend--> mobile app
+```
+
+1. Flash firmware STM32, cắm USB-UART (115200 baud)
+2. Xem cổng COM: Device Manager hoặc `GET /api/device/ports`
+3. Sửa `backend/.env`:
+
+```env
+DEVICE_MODE=serial
+SERIAL_PORT=COM3
+SERIAL_BAUD=115200
+```
+
+4. Restart backend — app hiện **STM32 đã kết nối**
+
+| Chế độ | `DEVICE_MODE` | Mô tả |
+|--------|---------------|-------|
+| Mô phỏng | `simulator` | Không cần mạch |
+| Mạch thật | `serial` | Đọc `FAN,...`, gửi lệnh `s/p/i/d/x/r` |
+
+Lệnh từ mobile → backend → UART giống desktop App (`App/`). **Không mở desktop App và backend serial cùng lúc** — một cổng COM chỉ dùng một chương trình.
+
 ## API (tóm tắt)
 
 | Method | Endpoint | Mô tả |
 |--------|----------|-------|
-| GET | `/api/status` | Trạng thái hiện tại |
+| GET | `/api/status` | Trạng thái hiện tại (+ RPM/fault khi nối mạch) |
+| GET | `/api/device/ports` | Danh sách cổng COM |
+| GET | `/api/device/connection` | Trạng thái kết nối STM32 |
 | PUT | `/api/status/fan` | Đặt tốc độ quạt |
 | PUT | `/api/status/mode` | `auto` / `manual` |
 | GET | `/api/telemetry/temperature` | Lịch sử nhiệt độ |
@@ -108,5 +135,6 @@ Quét QR bằng Expo Go, điện thoại và máy tính cùng WiFi.
 ## Lưu ý
 
 - Postgres Docker dùng port **5433** (tránh trùng Postgres cài sẵn trên máy)
-- Dữ liệu cảm biến đang **mô phỏng** trên backend, cập nhật mỗi 3 giây
+- `DEVICE_MODE=simulator`: dữ liệu mô phỏng, cập nhật mỗi 3 giây
+- `DEVICE_MODE=serial`: dữ liệu từ mạch, telemetry mỗi ~200ms
 - Cần backend chạy trước khi mở app mobile

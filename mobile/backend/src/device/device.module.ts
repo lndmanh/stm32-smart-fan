@@ -1,17 +1,18 @@
 import { forwardRef, Module } from '@nestjs/common';
-import { DeviceModule } from '../device/device.module';
 import { SettingsModule } from '../settings/settings.module';
 import { StatusModule } from '../status/status.module';
 import { TelemetryModule } from '../telemetry/telemetry.module';
-import { SimulatorService } from './simulator.service';
+import { DeviceController } from './device.controller';
+import { SerialBridgeService } from './serial-bridge.service';
 
 @Module({
   imports: [
-    StatusModule,
+    forwardRef(() => StatusModule),
     TelemetryModule,
     SettingsModule,
-    forwardRef(() => DeviceModule),
   ],
-  providers: [SimulatorService],
+  controllers: [DeviceController],
+  providers: [SerialBridgeService],
+  exports: [SerialBridgeService],
 })
-export class SimulatorModule {}
+export class DeviceModule {}
