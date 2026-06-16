@@ -38,8 +38,43 @@ class DashboardUIContractTests(unittest.TestCase):
     def test_footer_action_labels_are_stable(self):
         self.assertEqual(
             dashboard_app.FOOTER_ACTION_LABELS,
-            ("Refresh", "Connect", "Set speed", "Stop", "Reset", "PID", "Help"),
+            ("Refresh", "Connect", "Set speed", "Stop", "PID", "Reset", "Help"),
         )
+
+    def test_footer_controls_are_grouped_by_workflow(self):
+        self.assertTrue(hasattr(dashboard_app, "FOOTER_CONTROL_GROUPS"))
+
+        self.assertEqual(
+            dashboard_app.FOOTER_CONTROL_GROUPS,
+            (
+                ("connection", "Connection", ("refresh", "connect")),
+                ("speed", "Speed control", ("set_speed", "stop")),
+                ("tuning", "Tune & service", ("pid", "reset", "help")),
+            ),
+        )
+
+    def test_footer_action_roles_are_consistent(self):
+        self.assertTrue(hasattr(dashboard_app, "FOOTER_ACTION_ROLES"))
+
+        self.assertEqual(dashboard_app.FOOTER_ACTION_ROLES["stop"], "danger")
+        self.assertEqual(dashboard_app.FOOTER_ACTION_ROLES["connect"], "primary")
+        self.assertEqual(dashboard_app.FOOTER_ACTION_ROLES["help"], "secondary")
+
+    def test_footer_action_sequence_comes_from_group_model(self):
+        self.assertTrue(hasattr(dashboard_app, "footer_action_sequence"))
+
+        self.assertEqual(
+            dashboard_app.footer_action_sequence(),
+            ("refresh", "connect", "set_speed", "stop", "pid", "reset", "help"),
+        )
+
+    def test_footer_action_model_has_labels_and_roles_for_every_action(self):
+        actions = dashboard_app.footer_action_sequence()
+
+        self.assertEqual(len(actions), len(set(actions)))
+        self.assertEqual(set(actions), set(dashboard_app.FOOTER_ACTION_LABEL_MAP))
+        self.assertEqual(set(actions), set(dashboard_app.FOOTER_ACTION_ROLES))
+        self.assertLessEqual(set(dashboard_app.FOOTER_ACTION_ROLES.values()), {"primary", "secondary", "danger"})
 
     def test_missing_fan_asset_is_not_available(self):
         missing_asset = Path(dashboard_app.__file__).resolve().parent / "assets" / "missing-fan-model.png"

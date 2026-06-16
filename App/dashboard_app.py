@@ -6,7 +6,7 @@ import math
 from queue import Empty, Queue
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import font as tkfont, messagebox, ttk
 
 import matplotlib
 
@@ -31,40 +31,85 @@ POLL_MS = 80
 MAX_LOG_LINES = 120
 
 COLORS = {
-    "bg": "#F5F2EC",
-    "surface": "#FFFCF7",
-    "surface_alt": "#F0ECE4",
-    "border": "#DED7CC",
-    "text": "#252423",
-    "muted": "#706B64",
-    "subtle": "#9B9388",
-    "accent": "#2F6FDB",
-    "accent_dark": "#245BB5",
-    "success": "#2F7D57",
-    "warning": "#B56B26",
-    "error": "#B94B45",
-    "chart": "#F9F6F0",
-    "grid": "#E5DED3",
+    # Cool, airy page + card system
+    "bg": "#E8F1FB",          # soft sky-tinted backdrop
+    "surface": "#FFFFFF",      # crisp white cards
+    "surface_alt": "#F1F6FD",  # nested tiles / soft inner surface
+    "border": "#DBE7F5",       # soft cool hairline border
+    "border_strong": "#C4D7EE",  # emphasised border for the hero card
+    # Cool slate ink
+    "text": "#15263D",         # deep navy-slate
+    "muted": "#566782",        # slate
+    "subtle": "#93A2B8",       # light slate
+    # Sky-blue primary
+    "accent": "#1E8FE6",       # vivid sky blue (primary)
+    "accent_dark": "#1573C0",  # hover / pressed
+    "accent_soft": "#DEEEFB",  # tinted fill for soft buttons & chips
+    "accent_tint": "#EFF6FE",  # faint sky wash (halo, highlights)
+    # Semantic
+    "success": "#15A06B",
+    "warning": "#E08A1E",
+    "error": "#E0524E",
+    "error_soft": "#FBE7E6",
+    # Charts
+    "chart": "#F6FAFE",
+    "grid": "#E2ECF8",
 }
 
-FONT_BODY = ("Avenir Next", 12)
-FONT_SMALL = ("Avenir Next", 10)
-FONT_TITLE = ("Avenir Next", 18, "bold")
-FONT_DISPLAY = ("Avenir Next", 38, "bold")
-FONT_MONO = ("Menlo", 12)
-FONT_MONO_BIG = ("Menlo", 22, "bold")
+# UI fonts are resolved at runtime against the families actually installed, so
+# the dashboard prefers a modern grotesque and gracefully falls back otherwise.
+UI_FONT_CANDIDATES = ("Inter", "SF Pro Display", "Helvetica Neue", "Avenir Next")
+MONO_FONT_CANDIDATES = ("SF Mono", "Menlo", "Monaco", "Courier New")
+
+
+def resolve_font_family(candidates: tuple[str, ...], available: set[str]) -> str:
+    for name in candidates:
+        if name in available:
+            return name
+    return candidates[-1]
+
+
+def build_font_palette(ui_family: str, mono_family: str) -> dict[str, tuple]:
+    return {
+        "display": (ui_family, 40, "bold"),   # hero RPM readout
+        "heading": (ui_family, 26, "bold"),   # "Smart Fan" title
+        "title": (ui_family, 17, "bold"),     # panel titles
+        "section": (ui_family, 13, "bold"),   # chart / log headings
+        "group": (ui_family, 12, "bold"),     # footer group titles
+        "button": (ui_family, 11, "bold"),
+        "body": (ui_family, 12),
+        "small": (ui_family, 10),
+        "label": (ui_family, 9, "bold"),      # uppercase micro labels
+        "mono": (mono_family, 12),
+        "mono_big": (mono_family, 22, "bold"),
+    }
 
 FAN_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "fan_model.png"
 DASHBOARD_METRIC_KEYS = ("rpm", "rps", "target", "pwm", "temperature", "fault", "state")
-FOOTER_ACTION_LABELS = ("Refresh", "Connect", "Set speed", "Stop", "Reset", "PID", "Help")
-FOOTER_ACTION_LABEL_MAP = {
-    "refresh": FOOTER_ACTION_LABELS[0],
-    "connect": FOOTER_ACTION_LABELS[1],
-    "set_speed": FOOTER_ACTION_LABELS[2],
-    "stop": FOOTER_ACTION_LABELS[3],
-    "reset": FOOTER_ACTION_LABELS[4],
-    "pid": FOOTER_ACTION_LABELS[5],
-    "help": FOOTER_ACTION_LABELS[6],
+FOOTER_CONTROL_GROUPS = (
+    ("connection", "Connection", ("refresh", "connect")),
+    ("speed", "Speed control", ("set_speed", "stop")),
+    ("tuning", "Tune & service", ("pid", "reset", "help")),
+)
+FOOTER_ACTION_LABEL_ITEMS = (
+    ("refresh", "Refresh"),
+    ("connect", "Connect"),
+    ("set_speed", "Set speed"),
+    ("stop", "Stop"),
+    ("pid", "PID"),
+    ("reset", "Reset"),
+    ("help", "Help"),
+)
+FOOTER_ACTION_LABEL_MAP = dict(FOOTER_ACTION_LABEL_ITEMS)
+FOOTER_ACTION_LABELS = tuple(label for _, label in FOOTER_ACTION_LABEL_ITEMS)
+FOOTER_ACTION_ROLES = {
+    "refresh": "secondary",
+    "connect": "primary",
+    "set_speed": "primary",
+    "stop": "danger",
+    "reset": "secondary",
+    "pid": "primary",
+    "help": "secondary",
 }
 METRIC_CARD_TITLES = {
     "rps": "RPS",
@@ -90,6 +135,10 @@ def fan_stage_chip_layout(width: float, height: float) -> dict[str, tuple[float,
     }
 
 
+def footer_action_sequence() -> tuple[str, ...]:
+    return tuple(action for _, _, actions in FOOTER_CONTROL_GROUPS for action in actions)
+
+
 def _rounded_rect(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs) -> int:
     radius = min(radius, max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2))
     points = [
@@ -101,13 +150,19 @@ def _rounded_rect(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius:
 
 
 class RoundedSurface(tk.Canvas):
-    """Canvas-backed surface that gives Tk widgets a rounded card shell."""
+    """Canvas-backed surface that gives Tk widgets a rounded, softly elevated card shell."""
 
-    def __init__(self, parent, fill=COLORS["surface"], radius=24, inset=18, **kwargs):
+    # Stepped offset layers (dx, dy, fill) approximate a soft drop shadow.
+    SHADOW = ((3, 7, "#CDDBEE"), (2, 4, "#D9E4F3"), (1, 2, "#E6EEF8"))
+    MARGIN = 8  # reserved canvas border so the shadow has room to fall
+
+    def __init__(self, parent, fill=COLORS["surface"], radius=24, inset=18, outline=None, shadow=True, **kwargs):
         super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0, bd=0, **kwargs)
         self.fill = fill
         self.radius = radius
         self.inset = inset
+        self.outline = outline or COLORS["border"]
+        self.shadow = shadow
         self.body = tk.Frame(self, bg=fill)
         self._window = self.create_window(inset, inset, anchor="nw", window=self.body)
         self.bind("<Configure>", self._draw)
@@ -116,15 +171,19 @@ class RoundedSurface(tk.Canvas):
         self.delete("surface")
         width = max(2, self.winfo_width())
         height = max(2, self.winfo_height())
+        m = self.MARGIN if self.shadow else 3
+        if self.shadow and width > 2 * m + 12 and height > 2 * m + 12:
+            for dx, dy, color in self.SHADOW:
+                _rounded_rect(self, m + dx, m + dy, width - m + dx, height - m + dy, self.radius, fill=color, outline="", tags="surface")
         _rounded_rect(
             self,
-            2,
-            2,
-            width - 2,
-            height - 2,
+            m,
+            m,
+            width - m,
+            height - m,
             self.radius,
             fill=self.fill,
-            outline=COLORS["border"],
+            outline=self.outline,
             width=1,
             tags="surface",
         )
@@ -140,6 +199,11 @@ class FanDashboardApp(tk.Tk):
         self.geometry("1320x860")
         self.minsize(1160, 760)
         self.configure(bg=COLORS["bg"])
+
+        available = set(tkfont.families(self))
+        self.ui_font = resolve_font_family(UI_FONT_CANDIDATES, available)
+        self.mono_font = resolve_font_family(MONO_FONT_CANDIDATES, available)
+        self.fonts = build_font_palette(self.ui_font, self.mono_font)
 
         self.state_model = DashboardState()
         self.events: Queue[tuple[str, object]] = Queue()
@@ -169,11 +233,32 @@ class FanDashboardApp(tk.Tk):
     def _build_styles(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("TCombobox", fieldbackground=COLORS["surface"], background=COLORS["surface"], foreground=COLORS["text"])
-        style.configure("Accent.TButton", font=FONT_SMALL, foreground="white", background=COLORS["accent"], bordercolor=COLORS["accent"])
-        style.map("Accent.TButton", background=[("active", COLORS["accent_dark"])])
-        style.configure("Soft.TButton", font=FONT_SMALL, foreground=COLORS["text"], background=COLORS["surface_alt"], bordercolor=COLORS["border"])
-        style.map("Soft.TButton", background=[("active", "#E7E1D7")])
+        style.configure(
+            "TCombobox",
+            fieldbackground=COLORS["accent_tint"],
+            background=COLORS["accent_tint"],
+            foreground=COLORS["text"],
+            bordercolor=COLORS["border"],
+            lightcolor=COLORS["border"],
+            darkcolor=COLORS["border"],
+            arrowcolor=COLORS["accent"],
+            arrowsize=14,
+            padding=4,
+            relief="flat",
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", COLORS["accent_tint"]), ("focus", COLORS["accent_tint"])],
+            foreground=[("readonly", COLORS["text"])],
+            bordercolor=[("focus", COLORS["accent"])],
+            arrowcolor=[("active", COLORS["accent_dark"])],
+        )
+        # Match the drop-down list to the sky palette.
+        self.option_add("*TCombobox*Listbox.background", COLORS["surface"])
+        self.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
+        self.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "white")
+        self.option_add("*TCombobox*Listbox.font", self.fonts["body"])
 
     def _build_layout(self) -> None:
         shell = tk.Frame(self, bg=COLORS["bg"])
@@ -192,7 +277,7 @@ class FanDashboardApp(tk.Tk):
         self._build_command_dock(shell)
 
     def _build_fan_stage(self, parent: tk.Frame) -> None:
-        stage = RoundedSurface(parent, fill=COLORS["surface"], radius=34, inset=28)
+        stage = RoundedSurface(parent, fill=COLORS["surface"], radius=34, inset=28, outline=COLORS["border_strong"])
         stage.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
         body = stage.body
         body.grid_columnconfigure(0, weight=1)
@@ -201,11 +286,11 @@ class FanDashboardApp(tk.Tk):
         header = tk.Frame(body, bg=COLORS["surface"])
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        tk.Label(header, text="Smart Fan", bg=COLORS["surface"], fg=COLORS["text"], font=("Avenir Next", 30, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(header, textvariable=self.status_var, bg=COLORS["surface"], fg=COLORS["muted"], font=FONT_BODY).grid(row=1, column=0, sticky="w", pady=(3, 0))
-        self.connection_dot = tk.Canvas(header, width=18, height=18, bg=COLORS["surface"], highlightthickness=0)
-        self.connection_dot.grid(row=0, column=1, rowspan=2, sticky="e", padx=(14, 0))
-        self.connection_dot.create_oval(3, 3, 15, 15, fill=COLORS["subtle"], outline="")
+        tk.Label(header, text="Smart Fan", bg=COLORS["surface"], fg=COLORS["text"], font=self.fonts["heading"]).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        tk.Label(header, textvariable=self.status_var, bg=COLORS["surface"], fg=COLORS["muted"], font=self.fonts["body"]).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        self.connection_dot = tk.Canvas(header, width=26, height=26, bg=COLORS["surface"], highlightthickness=0)
+        self.connection_dot.grid(row=0, column=1, rowspan=3, sticky="e", padx=(14, 0))
+        self._draw_connection_dot(False)
 
         self.fan_canvas = tk.Canvas(body, bg=COLORS["surface"], highlightthickness=0, bd=0)
         self.fan_canvas.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -217,14 +302,14 @@ class FanDashboardApp(tk.Tk):
         panel.grid(row=0, column=1, sticky="nsew")
         body = panel.body
         body.grid_columnconfigure(0, weight=1)
-        body.grid_rowconfigure(1, weight=1)
-        body.grid_rowconfigure(2, weight=1)
-        body.grid_rowconfigure(3, weight=1)
+        body.grid_rowconfigure(1, weight=0)   # metric tiles keep their natural height
+        body.grid_rowconfigure(2, weight=1)   # charts absorb the extra vertical space
+        body.grid_rowconfigure(3, weight=0)   # event log keeps its fixed height
 
-        tk.Label(body, text="Live analytics", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_TITLE).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        tk.Label(body, text="Live analytics", bg=COLORS["surface"], fg=COLORS["text"], font=self.fonts["title"]).grid(row=0, column=0, sticky="w", pady=(0, 10))
 
         summary = tk.Frame(body, bg=COLORS["surface"])
-        summary.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        summary.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         for column in range(3):
             summary.grid_columnconfigure(column, weight=1)
         for index, key in enumerate(("rps", "target", "pwm", "temperature", "fault", "state")):
@@ -235,17 +320,17 @@ class FanDashboardApp(tk.Tk):
         charts.grid_columnconfigure(0, weight=1)
         charts.grid_rowconfigure(0, weight=1)
         charts.grid_rowconfigure(1, weight=1)
-        speed_card = RoundedSurface(charts, fill=COLORS["chart"], radius=24, inset=14)
-        speed_card.grid(row=0, column=0, sticky="nsew", pady=(0, 12))
-        temp_card = RoundedSurface(charts, fill=COLORS["chart"], radius=24, inset=14)
+        speed_card = RoundedSurface(charts, fill=COLORS["chart"], radius=20, inset=14, shadow=False)
+        speed_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        temp_card = RoundedSurface(charts, fill=COLORS["chart"], radius=20, inset=14, shadow=False)
         temp_card.grid(row=1, column=0, sticky="nsew")
         self.speed_ax, self.speed_canvas = self._chart(speed_card.body, "Speed vs target", "RPM", surface=COLORS["chart"])
         self.temp_ax, self.temp_canvas = self._chart(temp_card.body, "Temperature", "°C", surface=COLORS["chart"])
 
-        log_card = RoundedSurface(body, fill=COLORS["surface_alt"], radius=24, inset=14, height=150)
-        log_card.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
-        tk.Label(log_card.body, text="Live event log", bg=COLORS["surface_alt"], fg=COLORS["text"], font=("Avenir Next", 14, "bold")).pack(anchor="w", pady=(0, 8))
-        self.log_text = tk.Text(log_card.body, bg=COLORS["surface_alt"], fg=COLORS["text"], relief="flat", font=FONT_MONO, padx=8, pady=6, wrap="word", height=5)
+        log_card = RoundedSurface(body, fill=COLORS["surface_alt"], radius=20, inset=14, height=122, shadow=False)
+        log_card.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        tk.Label(log_card.body, text="Live event log", bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["section"]).pack(anchor="w", pady=(0, 8))
+        self.log_text = tk.Text(log_card.body, bg=COLORS["surface_alt"], fg=COLORS["text"], relief="flat", font=self.fonts["mono"], padx=8, pady=6, wrap="word", height=5)
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_configure("info", foreground=COLORS["muted"])
         self.log_text.tag_configure("success", foreground=COLORS["success"])
@@ -254,42 +339,112 @@ class FanDashboardApp(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def _build_command_dock(self, parent: tk.Frame) -> None:
-        dock = RoundedSurface(parent, fill=COLORS["surface"], radius=30, inset=18, height=126)
+        dock = RoundedSurface(parent, fill=COLORS["surface"], radius=30, inset=18, height=154)
         dock.grid(row=1, column=0, sticky="ew")
         dock.grid_propagate(False)
         body = dock.body
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_columnconfigure(3, weight=1)
+        for column, (group_id, title, actions) in enumerate(FOOTER_CONTROL_GROUPS):
+            body.grid_columnconfigure(column, weight=1)
+            group = self._footer_group(body, title, self._footer_group_column_count(group_id))
+            group.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 10, 0))
+            self._build_footer_group_controls(group_id, group, actions)
 
-        self._footer_label(body, "Port", 0, 0)
-        self.port_combo = ttk.Combobox(body, textvariable=self.port_var, state="readonly", height=8, width=18)
-        self.port_combo.grid(row=1, column=0, sticky="ew", padx=(0, 10))
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["refresh"], style="Soft.TButton", command=self.refresh_ports).grid(row=1, column=1, sticky="ew", padx=(0, 8))
-        self.connect_button = ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["connect"], style="Accent.TButton", command=self.toggle_connection)
-        self.connect_button.grid(row=1, column=2, sticky="ew", padx=(0, 16))
+    def _footer_group_column_count(self, group_id: str) -> int:
+        if group_id in ("connection", "speed"):
+            return 3
+        if group_id == "tuning":
+            return 5
+        raise ValueError(f"Unknown footer control group: {group_id}")
 
-        self._footer_label(body, "Target RPM", 0, 3)
-        tk.Entry(body, textvariable=self.speed_var, bg="white", fg=COLORS["text"], relief="flat", font=FONT_MONO, highlightthickness=1, highlightbackground=COLORS["border"], highlightcolor=COLORS["accent"]).grid(row=1, column=3, sticky="ew", ipady=7, padx=(0, 8))
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["set_speed"], style="Accent.TButton", command=self.send_speed_command).grid(row=1, column=4, sticky="ew", padx=(0, 16))
+    def _build_footer_group_controls(self, group_id: str, group: tk.Frame, actions: tuple[str, ...]) -> None:
+        if group_id == "connection":
+            refresh_action, connect_action = actions
+            self._footer_label(group, "Port", 1, 0)
+            self.port_combo = ttk.Combobox(group, textvariable=self.port_var, state="readonly", height=8, width=18)
+            self.port_combo.grid(row=2, column=0, sticky="ew", padx=(14, 8), pady=(0, 12), ipady=4)
+            self._footer_button(group, refresh_action, self.refresh_ports).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12))
+            self.connect_button = self._footer_button(group, connect_action, self.toggle_connection)
+            self.connect_button.grid(row=2, column=2, sticky="ew", padx=(0, 14), pady=(0, 12))
+            return
 
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["stop"], style="Soft.TButton", command=lambda: self.send_command(build_stop_command(), "Stop command sent")).grid(row=1, column=5, sticky="ew", padx=(0, 8))
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["reset"], style="Soft.TButton", command=lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(row=1, column=6, sticky="ew", padx=(0, 8))
+        if group_id == "speed":
+            set_speed_action, stop_action = actions
+            self._footer_label(group, "Target RPM", 1, 0)
+            self._footer_input(group, self.speed_var).grid(row=2, column=0, sticky="ew", padx=(14, 8), pady=(0, 12), ipady=7)
+            self._footer_button(group, set_speed_action, self.send_speed_command).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12))
+            self._footer_button(group, stop_action, lambda: self.send_command(build_stop_command(), "Stop command sent")).grid(row=2, column=2, sticky="ew", padx=(0, 14), pady=(0, 12))
+            return
 
-        self._footer_label(body, "PID", 0, 7)
-        ttk.Combobox(body, textvariable=self.pid_gain_var, values=("Kp", "Ki", "Kd"), state="readonly", width=5).grid(row=1, column=7, sticky="ew", padx=(0, 6))
-        tk.Entry(body, textvariable=self.pid_value_var, bg="white", fg=COLORS["text"], relief="flat", font=FONT_MONO, highlightthickness=1, highlightbackground=COLORS["border"], highlightcolor=COLORS["accent"], width=8).grid(row=1, column=8, sticky="ew", ipady=7, padx=(0, 6))
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["pid"], style="Accent.TButton", command=self.send_pid_command).grid(row=1, column=9, sticky="ew", padx=(0, 8))
-        ttk.Button(body, text=FOOTER_ACTION_LABEL_MAP["help"], style="Soft.TButton", command=lambda: self.send_command(build_help_command(), "Help command sent")).grid(row=1, column=10, sticky="ew")
+        if group_id != "tuning":
+            raise ValueError(f"Unknown footer control group: {group_id}")
+
+        pid_action, reset_action, help_action = actions
+        self._footer_label(group, "PID", 1, 0)
+        ttk.Combobox(group, textvariable=self.pid_gain_var, values=("Kp", "Ki", "Kd"), state="readonly", width=5).grid(row=2, column=0, sticky="ew", padx=(14, 6), pady=(0, 12), ipady=4)
+        self._footer_input(group, self.pid_value_var, width=8).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12), ipady=7)
+        self._footer_button(group, pid_action, self.send_pid_command).grid(row=2, column=2, sticky="ew", padx=(0, 8), pady=(0, 12))
+        self._footer_button(group, reset_action, lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(row=2, column=3, sticky="ew", padx=(0, 8), pady=(0, 12))
+        self._footer_button(group, help_action, lambda: self.send_command(build_help_command(), "Help command sent")).grid(row=2, column=4, sticky="ew", padx=(0, 14), pady=(0, 12))
+
+    def _footer_group(self, parent: tk.Frame, title: str, column_count: int) -> tk.Frame:
+        group = tk.Frame(parent, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
+        for column in range(column_count):
+            group.grid_columnconfigure(column, weight=1)
+        tk.Label(group, text=title, bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["group"]).grid(row=0, column=0, columnspan=column_count, sticky="w", padx=14, pady=(10, 6))
+        return group
+
+    def _footer_button(self, parent: tk.Frame, action: str, command) -> tk.Button:
+        palette = self._footer_button_palette(action)
+        return tk.Button(
+            parent,
+            text=FOOTER_ACTION_LABEL_MAP[action],
+            command=command,
+            bg=palette[0],
+            fg=palette[1],
+            activebackground=palette[2],
+            activeforeground=palette[1],
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=palette[2],
+            font=self.fonts["button"],
+            padx=12,
+            pady=8,
+            cursor="hand2",
+        )
+
+    def _footer_button_palette(self, action: str) -> tuple[str, str, str]:
+        role = FOOTER_ACTION_ROLES[action]
+        return {
+            "primary": (COLORS["accent"], "white", COLORS["accent_dark"]),
+            "secondary": (COLORS["accent_soft"], COLORS["accent_dark"], "#CADFF6"),
+            "danger": (COLORS["error_soft"], COLORS["error"], "#F4CFCD"),
+        }[role]
+
+    def _footer_input(self, parent: tk.Frame, textvariable: tk.StringVar, width: int = 10) -> tk.Entry:
+        return tk.Entry(
+            parent,
+            textvariable=textvariable,
+            width=width,
+            bg=COLORS["accent_tint"],
+            fg=COLORS["text"],
+            relief="flat",
+            font=self.fonts["mono"],
+            highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["accent"],
+            insertbackground=COLORS["accent"],
+        )
 
     def _footer_label(self, parent: tk.Frame, text: str, row: int, column: int) -> None:
-        tk.Label(parent, text=text.upper(), bg=COLORS["surface"], fg=COLORS["subtle"], font=("Avenir Next", 9, "bold")).grid(row=row, column=column, sticky="w", pady=(0, 6))
+        tk.Label(parent, text=text.upper(), bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).grid(row=row, column=column, sticky="w", padx=14 if column == 0 else 0, pady=(0, 6))
 
     def _metric_tile(self, parent: tk.Frame, key: str, title: str, index: int) -> None:
         tile = tk.Frame(parent, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
         tile.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0 if index % 3 == 0 else 8, 0), pady=(0 if index < 3 else 8, 0))
-        tk.Label(tile, text=title.upper(), bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=("Avenir Next", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        self.metric_labels[key] = tk.Label(tile, text="--", bg=COLORS["surface_alt"], fg=COLORS["text"], font=FONT_MONO)
-        self.metric_labels[key].pack(anchor="w", padx=10, pady=(2, 8))
+        tk.Label(tile, text=title.upper(), bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).pack(anchor="w", padx=10, pady=(6, 0))
+        self.metric_labels[key] = tk.Label(tile, text="--", bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["mono"])
+        self.metric_labels[key].pack(anchor="w", padx=10, pady=(1, 6))
 
     def _ensure_fan_stage_labels(self) -> dict[str, tk.Label]:
         if hasattr(self, "fan_stage_labels"):
@@ -297,16 +452,16 @@ class FanDashboardApp(tk.Tk):
         self.fan_stage_labels = {}
         self.fan_stage_metric_labels = {}
         specs = (
-            ("rpm", "RPM", FONT_DISPLAY),
-            ("pwm", "LOAD", FONT_MONO_BIG),
-            ("temperature", "TEMP", FONT_MONO_BIG),
-            ("state", "STATE", FONT_MONO),
-            ("fault", "FAULT", FONT_MONO),
+            ("rpm", "RPM", self.fonts["display"]),
+            ("pwm", "LOAD", self.fonts["mono_big"]),
+            ("temperature", "TEMP", self.fonts["mono_big"]),
+            ("state", "STATE", self.fonts["mono"]),
+            ("fault", "FAULT", self.fonts["mono"]),
         )
         for key, title, font in specs:
-            chip = tk.Frame(self.fan_canvas, bg=COLORS["surface"], highlightthickness=1, highlightbackground=COLORS["border"])
-            tk.Label(chip, text=title, bg=COLORS["surface"], fg=COLORS["subtle"], font=("Avenir Next", 9, "bold")).pack(anchor="w", padx=12, pady=(8, 0))
-            label = tk.Label(chip, text="--", bg=COLORS["surface"], fg=COLORS["text"], font=font)
+            chip = tk.Frame(self.fan_canvas, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
+            tk.Label(chip, text=title, bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).pack(anchor="w", padx=12, pady=(8, 0))
+            label = tk.Label(chip, text="--", bg=COLORS["surface_alt"], fg=COLORS["text"], font=font)
             label.pack(anchor="w", padx=12, pady=(0, 8))
             self.fan_stage_labels[key] = chip
             self.fan_stage_metric_labels[key] = label
@@ -351,23 +506,26 @@ class FanDashboardApp(tk.Tk):
         canvas.tag_raise("stage_chip")
 
     def _draw_fallback_fan(self, canvas: tk.Canvas, cx: float, cy: float, radius: float) -> None:
-        for scale, color, width in ((1.35, "#F3EFE7", 3), (1.05, "#DDD6CB", 2), (0.72, "#ECE6DD", 1)):
+        # Soft sky halo so the fan reads as the hero element on the white stage.
+        glow = radius * 1.55
+        canvas.create_oval(cx - glow, cy - glow, cx + glow, cy + glow, fill=COLORS["accent_tint"], outline="", tags="fan_art")
+        for scale, color, width in ((1.34, "#CFE0F4", 2), (1.06, "#BBD3EE", 2), (0.74, "#DEEAF8", 1)):
             r = radius * scale
             canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=width, tags="fan_art")
         for start in (18, 138, 258):
-            canvas.create_arc(cx - radius * 1.65, cy - radius * 1.65, cx + radius * 1.65, cy + radius * 1.65, start=start, extent=42, style="arc", outline="#D8E4F7", width=3, tags="fan_art")
+            canvas.create_arc(cx - radius * 1.62, cy - radius * 1.62, cx + radius * 1.62, cy + radius * 1.62, start=start, extent=44, style="arc", outline="#A6CDF0", width=3, tags="fan_art")
         for angle in (20, 140, 260):
             blade = []
             for dist, offset in ((0.18, -22), (1.02, -10), (1.15, 24), (0.22, 26)):
                 radians = math.radians(angle + offset)
                 blade.extend((cx + radius * dist * math.cos(radians), cy + radius * dist * math.sin(radians)))
-            canvas.create_polygon(blade, smooth=True, fill="#FFFFFF", outline="#D6CEC2", width=2, tags="fan_art")
-        hub = radius * 0.22
-        canvas.create_oval(cx - hub, cy - hub, cx + hub, cy + hub, fill="#FFFCF7", outline="#BFC9D8", width=2, tags="fan_art")
-        canvas.create_oval(cx - hub * 0.42, cy - hub * 0.42, cx + hub * 0.42, cy + hub * 0.42, fill=COLORS["accent"], outline="", tags="fan_art")
+            canvas.create_polygon(blade, smooth=True, fill="#FFFFFF", outline="#AFCDEE", width=2, tags="fan_art")
+        hub = radius * 0.24
+        canvas.create_oval(cx - hub, cy - hub, cx + hub, cy + hub, fill="#FFFFFF", outline="#9CC2EA", width=2, tags="fan_art")
+        canvas.create_oval(cx - hub * 0.46, cy - hub * 0.46, cx + hub * 0.46, cy + hub * 0.46, fill=COLORS["accent"], outline="", tags="fan_art")
 
     def _chart(self, parent: tk.Frame, title: str, ylabel: str, surface: str = COLORS["surface"]) -> tuple[object, FigureCanvasTkAgg]:
-        tk.Label(parent, text=title, bg=surface, fg=COLORS["text"], font=("Avenir Next", 14, "bold")).pack(anchor="w")
+        tk.Label(parent, text=title, bg=surface, fg=COLORS["text"], font=self.fonts["section"]).pack(anchor="w")
         fig = Figure(figsize=(6, 2.1), dpi=100, facecolor=surface)
         ax = fig.add_subplot(111)
         ax.set_facecolor(COLORS["chart"])
@@ -486,7 +644,7 @@ class FanDashboardApp(tk.Tk):
             target = [point[2] for point in speed_points]
             self.speed_ax.plot(xs, rpm, color=COLORS["accent"], linewidth=2.2, label="Speed")
             self.speed_ax.plot(xs, target, color=COLORS["warning"], linewidth=1.8, linestyle="--", label="Target")
-            self.speed_ax.legend(loc="upper left", frameon=False, fontsize=9)
+            self.speed_ax.legend(loc="lower right", frameon=False, fontsize=8, labelcolor=COLORS["muted"])
         if temp_points:
             base = temp_points[0][0]
             xs = [(point[0] - base) / 1000 for point in temp_points]
@@ -518,13 +676,25 @@ class FanDashboardApp(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def _set_connected(self, connected: bool) -> None:
-        self.connect_button.configure(text="Disconnect" if connected else FOOTER_ACTION_LABEL_MAP["connect"])
+        palette = self._footer_button_palette("stop" if connected else "connect")
+        self.connect_button.configure(
+            text="Disconnect" if connected else FOOTER_ACTION_LABEL_MAP["connect"],
+            bg=palette[0],
+            fg=palette[1],
+            activebackground=palette[2],
+            activeforeground=palette[1],
+            highlightbackground=palette[2],
+        )
         self.status_var.set("Connected" if connected else "Disconnected")
         self._draw_connection_dot(connected)
 
     def _draw_connection_dot(self, connected: bool) -> None:
-        self.connection_dot.delete("all")
-        self.connection_dot.create_oval(3, 3, 15, 15, fill=COLORS["success"] if connected else COLORS["subtle"], outline="")
+        canvas = self.connection_dot
+        canvas.delete("all")
+        ring = "#D7F0E5" if connected else "#E4EAF2"
+        dot = COLORS["success"] if connected else COLORS["subtle"]
+        canvas.create_oval(2, 2, 24, 24, fill=ring, outline="")
+        canvas.create_oval(8, 8, 18, 18, fill=dot, outline="")
 
     def _on_close(self) -> None:
         try:
