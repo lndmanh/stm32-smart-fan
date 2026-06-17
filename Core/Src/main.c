@@ -11,7 +11,7 @@
 #define CMD_BUFFER_SIZE 32U
 #define TEMP_SENSOR_ERROR_VALUE -1000.0f
 
-#define FAN_TEMP_START_C 30.0f
+#define FAN_TEMP_START_C 20.0f
 #define FAN_TEMP_MAX_C   50.0f
 #define FAN_MIN_RPM      60.0f
 #define FAN_MAX_RPM      180.0f
