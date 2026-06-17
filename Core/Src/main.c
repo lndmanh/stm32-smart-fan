@@ -1,7 +1,7 @@
 #include "hardware.h"
 #include "pid_controller.h"
 #include "system_config.h"
-
+#include "sensor.h"
 #include <stdint.h>
 #include <stdlib.h>
 
