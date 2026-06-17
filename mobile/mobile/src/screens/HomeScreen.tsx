@@ -1,19 +1,30 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
 import FanSpinner from '../components/FanSpinner';
 import LineChart from '../components/LineChart';
+import ModeToggle from '../components/ModeToggle';
 import MonitorCard from '../components/MonitorCard';
 import { FanGauge, PwmBars, StatusCheck } from '../components/CardVisuals';
 import { colors } from '../constants/theme';
 import type { MonitorStatus } from '../types/api';
+
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 type HomeScreenProps = {
   status: MonitorStatus | null;
@@ -22,8 +33,10 @@ type HomeScreenProps = {
   pwmPoints: number[];
   loading: boolean;
   error: string | null;
+  modePending: boolean;
   onOpenSettings: () => void;
   onOpenFanControl: () => void;
+  onSetControlMode: (mode: 'auto' | 'manual') => Promise<void>;
 };
 
 export default function HomeScreen({
@@ -33,8 +46,10 @@ export default function HomeScreen({
   pwmPoints,
   loading,
   error,
+  modePending,
   onOpenSettings,
   onOpenFanControl,
+  onSetControlMode,
 }: HomeScreenProps) {
   if (loading && !status) {
     return (
@@ -61,6 +76,14 @@ export default function HomeScreen({
         ? 'STM32 đã kết nối'
         : 'STM32 chưa kết nối'
       : 'Mô phỏng backend';
+
+  const switchMode = (next: 'auto' | 'manual') => {
+    if (next === data.controlMode) {
+      return;
+    }
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    void onSetControlMode(next);
+  };
 
   return (
     <View style={styles.container}>
@@ -93,6 +116,12 @@ export default function HomeScreen({
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        <ModeToggle
+          mode={data.controlMode}
+          onChange={switchMode}
+          pending={modePending}
+        />
+
         <MonitorCard
           icon={
             <MaterialCommunityIcons

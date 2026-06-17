@@ -71,3 +71,11 @@ export function buildStopCommand(): string {
 export function buildResetFaultsCommand(): string {
   return 'r\n';
 }
+
+export function buildAutoModeCommand(): string {
+  return 'a\n';
+}
+
+export function buildManualModeCommand(): string {
+  return 'm\n';
+}

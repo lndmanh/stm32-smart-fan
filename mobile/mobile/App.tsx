@@ -45,6 +45,7 @@ export default function App() {
           error={monitor.error}
           onOpenSettings={() => setScreen('settings')}
           onOpenFanControl={() => setScreen('fan')}
+          onRefresh={monitor.refresh}
         />
       ) : null}
       {screen === 'fan' ? (

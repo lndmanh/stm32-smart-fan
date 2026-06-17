@@ -1,7 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -12,6 +11,7 @@ import {
 import { api } from '../api/client';
 import FanSpinner from '../components/FanSpinner';
 import LineChart from '../components/LineChart';
+import ModeToggle from '../components/ModeToggle';
 import { colors } from '../constants/theme';
 import type { MonitorStatus } from '../types/api';
 
@@ -52,6 +52,9 @@ export default function FanControlScreen({
   };
 
   const switchMode = async (next: 'auto' | 'manual') => {
+    if (next === mode) {
+      return;
+    }
     setMode(next);
     setSaving(true);
     try {
@@ -75,22 +78,11 @@ export default function FanControlScreen({
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.modeRow}>
-          <ModeButton
-            label="Tự động"
-            sub="Theo nhiệt độ"
-            active={mode === 'auto'}
-            onPress={() => switchMode('auto')}
-            disabled={saving}
-          />
-          <ModeButton
-            label="Thủ công"
-            sub="Tự chỉnh tốc độ"
-            active={mode === 'manual'}
-            onPress={() => switchMode('manual')}
-            disabled={saving}
-          />
-        </View>
+        <ModeToggle
+          mode={mode}
+          onChange={switchMode}
+          saving={saving}
+        />
 
         <View style={styles.fanBox}>
           <FanSpinner speed={mode === 'auto' ? (status?.fanSpeed ?? 0) : fanSpeed} size={72} />
@@ -146,37 +138,8 @@ export default function FanControlScreen({
             </View>
           </View>
         ) : null}
-
-        {saving ? (
-          <ActivityIndicator style={styles.saving} color={colors.primary} />
-        ) : null}
       </ScrollView>
     </View>
-  );
-}
-
-function ModeButton({
-  label,
-  sub,
-  active,
-  onPress,
-  disabled,
-}: {
-  label: string;
-  sub: string;
-  active: boolean;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.modeButton, active && styles.modeButtonActive]}
-      onPress={onPress}
-      disabled={disabled}
-    >
-      <Text style={[styles.modeLabel, active && styles.modeLabelActive]}>{label}</Text>
-      <Text style={[styles.modeSub, active && styles.modeSubActive]}>{sub}</Text>
-    </TouchableOpacity>
   );
 }
 
@@ -217,39 +180,6 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 32,
-  },
-  modeRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 16,
-  },
-  modeButton: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  modeButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  modeLabel: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  modeLabelActive: {
-    color: '#fff',
-  },
-  modeSub: {
-    fontSize: 11,
-    color: colors.textSecondary,
-    marginTop: 4,
-  },
-  modeSubActive: {
-    color: '#E3F2FD',
   },
   fanBox: {
     backgroundColor: colors.card,
@@ -338,8 +268,5 @@ const styles = StyleSheet.create({
   },
   presetTextActive: {
     color: '#fff',
-  },
-  saving: {
-    marginTop: 12,
   },
 });

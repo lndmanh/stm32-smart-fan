@@ -11,7 +11,10 @@ type MonitorData = {
   pwmPoints: number[];
   loading: boolean;
   error: string | null;
+  modePending: boolean;
   refresh: () => Promise<void>;
+  setControlMode: (mode: 'auto' | 'manual') => Promise<void>;
+  setFanSpeed: (fanSpeed: number) => Promise<void>;
 };
 
 export function useMonitorData(): MonitorData {
@@ -21,6 +24,7 @@ export function useMonitorData(): MonitorData {
   const [pwmPoints, setPwmPoints] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modePending, setModePending] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -45,6 +49,57 @@ export function useMonitorData(): MonitorData {
     }
   }, []);
 
+  const setControlMode = useCallback(async (mode: 'auto' | 'manual') => {
+    if (modePending) {
+      return;
+    }
+
+    const previous = status;
+    setModePending(true);
+    setStatus((current) =>
+      current ? { ...current, controlMode: mode } : current,
+    );
+
+    try {
+      const updated = await api.setControlMode(mode);
+      setStatus((current) =>
+        current ? { ...current, ...updated } : updated,
+      );
+      setError(null);
+    } catch (err) {
+      setStatus(previous);
+      const message =
+        err instanceof Error ? err.message : 'Không thể đổi chế độ';
+      setError(`${message}\n→ ${getApiBaseUrl()}`);
+    } finally {
+      setModePending(false);
+    }
+  }, [modePending, status]);
+
+  const setFanSpeed = useCallback(async (fanSpeed: number) => {
+    const clamped = Math.min(100, Math.max(0, Math.round(fanSpeed)));
+    const previous = status;
+
+    setStatus((current) =>
+      current
+        ? { ...current, fanSpeed: clamped, pwm: clamped, controlMode: 'manual' }
+        : current,
+    );
+
+    try {
+      const updated = await api.setFanSpeed(clamped);
+      setStatus((current) =>
+        current ? { ...current, ...updated } : updated,
+      );
+      setError(null);
+    } catch (err) {
+      setStatus(previous);
+      const message =
+        err instanceof Error ? err.message : 'Không thể đặt tốc độ quạt';
+      setError(`${message}\n→ ${getApiBaseUrl()}`);
+    }
+  }, [status]);
+
   useEffect(() => {
     refresh();
     const timer = setInterval(refresh, POLL_INTERVAL_MS);
@@ -58,7 +113,10 @@ export function useMonitorData(): MonitorData {
     pwmPoints,
     loading,
     error,
+    modePending,
     refresh,
+    setControlMode,
+    setFanSpeed,
   };
 }
 

@@ -48,8 +48,8 @@ export class StatusController {
   @Put('mode')
   async setControlMode(@Body() dto: SetControlModeDto) {
     const status = await this.statusService.setControlMode(dto.mode);
-    if (this.serialBridge.isActive() && dto.mode === 'manual') {
-      await this.serialBridge.setTargetPercent(status.fanSpeed);
+    if (this.serialBridge.isActive()) {
+      await this.serialBridge.setControlMode(dto.mode, status.fanSpeed);
     }
     return status;
   }

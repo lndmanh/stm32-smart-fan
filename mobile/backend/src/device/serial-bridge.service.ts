@@ -5,7 +5,6 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Interval } from '@nestjs/schedule';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { SettingsService } from '../settings/settings.service';
@@ -13,6 +12,8 @@ import { StatusService } from '../status/status.service';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import {
   FanTelemetrySample,
+  buildAutoModeCommand,
+  buildManualModeCommand,
   buildPidCommand,
   buildResetFaultsCommand,
   buildSetSpeedCommand,
@@ -30,8 +31,6 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
   private parser: ReadlineParser | null = null;
   private latest: FanTelemetrySample | null = null;
   private connected = false;
-  private autoIntegral = 0;
-  private autoPreviousError = 0;
 
   constructor(
     private readonly config: ConfigService,
@@ -105,48 +104,15 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     this.sendRaw(buildResetFaultsCommand());
   }
 
-  @Interval(3000)
-  async autoControlTick() {
-    if (!this.isActive()) {
+  async setControlMode(mode: 'auto' | 'manual', fanSpeed?: number): Promise<void> {
+    if (mode === 'auto') {
+      this.sendRaw(buildAutoModeCommand());
       return;
     }
 
-    try {
-      const status = await this.statusService.getStatus();
-      if (status.controlMode !== 'auto') {
-        return;
-      }
-
-      const settings = await this.settingsService.getOrCreateSettings();
-      const temperature = status.temperature;
-      const error = temperature - Number(settings.temperatureThreshold);
-      this.autoIntegral += error;
-      const derivative = error - this.autoPreviousError;
-      this.autoPreviousError = error;
-
-      const pidOutput =
-        Number(settings.kp) * error +
-        Number(settings.ki) * this.autoIntegral * 0.01 +
-        Number(settings.kd) * derivative;
-
-      const tempRatio = this.clamp(
-        (temperature - 55) / (Number(settings.temperatureThreshold) - 55),
-        0,
-        1,
-      );
-      const tempBasedPercent = Math.round(
-        settings.fanMinSpeed +
-          tempRatio * (settings.fanMaxSpeed - settings.fanMinSpeed),
-      );
-      const targetPercent = this.clamp(
-        Math.round(tempBasedPercent * 0.6 + (50 + pidOutput * 4) * 0.4),
-        settings.fanMinSpeed,
-        settings.fanMaxSpeed,
-      );
-
-      this.sendRaw(buildSetSpeedCommand(percentToRpm(targetPercent)));
-    } catch (error) {
-      this.logger.warn('Auto control tick failed', error);
+    this.sendRaw(buildManualModeCommand());
+    if (fanSpeed != null) {
+      this.sendRaw(buildSetSpeedCommand(percentToRpm(fanSpeed)));
     }
   }
 
@@ -231,9 +197,5 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     await this.telemetryService.addReading('temperature', sample.temperatureC);
     await this.telemetryService.addReading('fanSpeed', fanSpeed);
     await this.telemetryService.addReading('pwm', pwm);
-  }
-
-  private clamp(value: number, min: number, max: number) {
-    return Math.min(max, Math.max(min, value));
   }
 }
