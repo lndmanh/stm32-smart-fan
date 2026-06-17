@@ -1,3 +1,4 @@
+#include "main.h"
 #include "hardware.h"
 #include "pid_controller.h"
 #include "system_config.h"
@@ -6,7 +7,17 @@
 #include <stdlib.h>
 
 #define TELEMETRY_PERIOD_MS 200U
+#define TEMP_CONTROL_PERIOD_MS 1000U
 #define CMD_BUFFER_SIZE 32U
+#define TEMP_SENSOR_ERROR_VALUE -1000.0f
+
+#define FAN_TEMP_START_C 30.0f
+#define FAN_TEMP_MAX_C   50.0f
+#define FAN_MIN_RPM      60.0f
+#define FAN_MAX_RPM      180.0f
+
+static float latest_temperature_c = TEMP_SENSOR_ERROR_VALUE;
+static uint8_t temperature_control_enabled = 1U;
 
 static void UART_WriteUnsigned(uint32_t value) {
     char digits[10];
@@ -60,14 +71,37 @@ static void UART_WriteScaled(float value, uint32_t decimals) {
     }
 }
 
-static float abs_float(float value) {
-    return value < 0.0f ? -value : value;
-}
+static void TemperatureControl_Update(void) {
+    static uint32_t last_temperature_ms = 0U;
+    uint32_t now = data_time_ms;
+    float target_rpm = 0.0f;
 
-static float SimulatedTemperatureC(void) {
-    float load = abs_float((float)pwm_duty) / (float)PWM_ARR;
-    float ramp = (float)(data_time_ms % 10000U) / 10000.0f;
-    return 28.0f + (load * 18.0f) + (ramp * 2.0f);
+    if ((now - last_temperature_ms) < TEMP_CONTROL_PERIOD_MS) {
+        return;
+    }
+    last_temperature_ms = now;
+
+    latest_temperature_c = Sensor_ReadTemperature();
+
+    if (latest_temperature_c == TEMP_SENSOR_ERROR_VALUE) {
+        if (temperature_control_enabled != 0U) {
+            PID_SetTargetRPM(0.0f);
+        }
+        return;
+    }
+
+    if (latest_temperature_c <= FAN_TEMP_START_C) {
+        target_rpm = 0.0f;
+    } else if (latest_temperature_c >= FAN_TEMP_MAX_C) {
+        target_rpm = FAN_MAX_RPM;
+    } else {
+        float ratio = (latest_temperature_c - FAN_TEMP_START_C) / (FAN_TEMP_MAX_C - FAN_TEMP_START_C);
+        target_rpm = FAN_MIN_RPM + (ratio * (FAN_MAX_RPM - FAN_MIN_RPM));
+    }
+
+    if (temperature_control_enabled != 0U) {
+        PID_SetTargetRPM(target_rpm);
+    }
 }
 
 static void SendTelemetry(void) {
@@ -85,7 +119,7 @@ static void SendTelemetry(void) {
     UART2_WriteChar(',');
     UART_WriteSigned(pwm_duty);
     UART2_WriteChar(',');
-    UART_WriteScaled(SimulatedTemperatureC(), 1U);
+    UART_WriteScaled(latest_temperature_c, 1U);
     UART2_WriteChar(',');
     UART_WriteUnsigned(fault_code);
     UART2_WriteChar(',');
@@ -94,7 +128,7 @@ static void SendTelemetry(void) {
 }
 
 static void SendHelp(void) {
-    UART2_WriteString("Commands: s150 set RPM, p35 set Kp, i100 set Ki, d0.5 set Kd, x stop, r reset, ? help\r\n");
+    UART2_WriteString("Commands: a auto temp, m manual, s150 set RPM, p35 set Kp, i100 set Ki, d0.5 set Kd, x stop, r reset, ? help\r\n");
 }
 
 static void SendAck(const char *message) {
@@ -112,8 +146,19 @@ static void ProcessCommand(char *cmd) {
     switch (cmd[0]) {
         case 's':
         case 'S':
+            temperature_control_enabled = 0U;
             PID_SetTargetRPM(value);
             SendAck("target_rpm");
+            break;
+        case 'a':
+        case 'A':
+            temperature_control_enabled = 1U;
+            SendAck("auto_temperature");
+            break;
+        case 'm':
+        case 'M':
+            temperature_control_enabled = 0U;
+            SendAck("manual");
             break;
         case 'p':
         case 'P':
@@ -132,6 +177,7 @@ static void ProcessCommand(char *cmd) {
             break;
         case 'x':
         case 'X':
+            temperature_control_enabled = 0U;
             PID_SetTargetRPM(0.0f);
             SendAck("stop");
             break;
@@ -169,7 +215,9 @@ static void PollCommands(void) {
 }
 
 int main(void) {
+    HAL_Init();
     System_Init();
+    Sensor_Init();
     UART2_WriteString("STM32 Smart Fan Ready\r\n");
     SendHelp();
 
@@ -177,6 +225,7 @@ int main(void) {
 
     while (1) {
         PollCommands();
+        TemperatureControl_Update();
 
         uint32_t now = data_time_ms;
         if ((now - last_telemetry_ms) >= TELEMETRY_PERIOD_MS) {
