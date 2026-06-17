@@ -14,7 +14,7 @@
  ******************************************************************************/
 #include "sensor.h"
 #include "main.h"
-#define DS18B20_PORT GPIOA
+#define DS18B20_PORT GPIOB
 #define DS18B20_PIN  GPIO_PIN_0
 
 #define FILTER_SIZE 10
