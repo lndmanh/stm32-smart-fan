@@ -39,15 +39,20 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     private readonly settingsService: SettingsService,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit() {
     if (!this.isSerialMode()) {
       this.logger.log('Serial bridge disabled (simulator mode)');
       return;
     }
 
-    const portPath = this.config.get<string>('SERIAL_PORT', '').trim();
+    await this.statusService.resetToZeros();
+    await this.telemetryService.clearAll();
+
+    const portPath = await this.resolvePortPath();
     if (!portPath) {
-      this.logger.warn('DEVICE_MODE=serial but SERIAL_PORT is empty');
+      this.logger.warn(
+        'No serial port configured or detected — waiting for STM32 (values default to 0)',
+      );
       return;
     }
 
@@ -59,7 +64,7 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   isSerialMode(): boolean {
-    return this.config.get<string>('DEVICE_MODE', 'simulator') === 'serial';
+    return this.config.get<string>('DEVICE_MODE', 'serial') === 'serial';
   }
 
   isActive(): boolean {
@@ -79,32 +84,34 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     return ports.map((port) => port.path);
   }
 
-  sendRaw(command: string): void {
+  sendRaw(command: string): boolean {
     if (!this.port?.isOpen) {
-      throw new Error('STM32 serial port is not connected');
+      this.logger.warn(`Serial not open, skip: ${command.trim()}`);
+      return false;
     }
     this.port.write(command);
+    return true;
   }
 
-  async setTargetPercent(percent: number): Promise<void> {
+  setTargetPercent(percent: number): void {
     this.sendRaw(buildSetSpeedCommand(percentToRpm(percent)));
   }
 
-  async applyPidSettings(kp: number, ki: number, kd: number): Promise<void> {
+  applyPidSettings(kp: number, ki: number, kd: number): void {
     this.sendRaw(buildPidCommand('kp', kp));
     this.sendRaw(buildPidCommand('ki', ki));
     this.sendRaw(buildPidCommand('kd', kd));
   }
 
-  async stopFan(): Promise<void> {
+  stopFan(): void {
     this.sendRaw(buildStopCommand());
   }
 
-  async resetFaults(): Promise<void> {
+  resetFaults(): void {
     this.sendRaw(buildResetFaultsCommand());
   }
 
-  async setControlMode(mode: 'auto' | 'manual', fanSpeed?: number): Promise<void> {
+  setControlMode(mode: 'auto' | 'manual', fanSpeed?: number): void {
     if (mode === 'auto') {
       this.sendRaw(buildAutoModeCommand());
       return;
@@ -114,6 +121,22 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     if (fanSpeed != null) {
       this.sendRaw(buildSetSpeedCommand(percentToRpm(fanSpeed)));
     }
+  }
+
+  private async resolvePortPath(): Promise<string | null> {
+    const configured = this.config.get<string>('SERIAL_PORT', '').trim();
+    if (configured) {
+      return configured;
+    }
+
+    const ports = await this.listPorts();
+    if (ports.length === 0) {
+      return null;
+    }
+
+    const autoPort = ports[0];
+    this.logger.log(`SERIAL_PORT not set — auto-selected ${autoPort}`);
+    return autoPort;
   }
 
   private connect(portPath: string) {
@@ -140,11 +163,13 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
 
     this.port.on('close', () => {
       this.connected = false;
+      void this.clearDeviceReading();
       this.logger.warn(`Serial port ${portPath} closed`);
     });
 
     this.port.on('error', (error) => {
       this.connected = false;
+      void this.clearDeviceReading();
       this.logger.error(`Serial error on ${portPath}`, error);
     });
 
@@ -164,6 +189,12 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     }
     this.port = null;
     this.connected = false;
+    this.latest = null;
+  }
+
+  private async clearDeviceReading() {
+    this.latest = null;
+    await this.statusService.resetToZeros();
   }
 
   private async handleLine(line: string) {

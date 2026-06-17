@@ -1,68 +1,66 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
+  LayoutAnimation,
+  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
+  UIManager,
   View,
 } from 'react-native';
-import { api } from '../api/client';
 import FanSpinner from '../components/FanSpinner';
 import LineChart from '../components/LineChart';
 import ModeToggle from '../components/ModeToggle';
 import { colors } from '../constants/theme';
 import type { MonitorStatus } from '../types/api';
 
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 type FanControlScreenProps = {
   status: MonitorStatus | null;
   fanPoints: number[];
+  modePending: boolean;
   onBack: () => void;
-  onUpdated: () => Promise<void>;
+  onSetControlMode: (mode: 'auto' | 'manual') => Promise<void>;
+  onSetFanSpeed: (fanSpeed: number) => Promise<void>;
 };
 
 export default function FanControlScreen({
   status,
   fanPoints,
+  modePending,
   onBack,
-  onUpdated,
+  onSetControlMode,
+  onSetFanSpeed,
 }: FanControlScreenProps) {
-  const [fanSpeed, setFanSpeed] = useState(status?.fanSpeed ?? 0);
-  const [mode, setMode] = useState<'auto' | 'manual'>(status?.controlMode ?? 'auto');
-  const [saving, setSaving] = useState(false);
+  const mode = status?.controlMode ?? 'auto';
+  const fanSpeed = status?.fanSpeed ?? 0;
+  const [localFanSpeed, setLocalFanSpeed] = useState(fanSpeed);
 
   useEffect(() => {
-    if (status) {
-      setFanSpeed(status.fanSpeed);
-      setMode(status.controlMode);
-    }
-  }, [status]);
+    setLocalFanSpeed(fanSpeed);
+  }, [fanSpeed]);
 
-  const applyFanSpeed = async (next: number) => {
-    const clamped = Math.min(100, Math.max(0, next));
-    setFanSpeed(clamped);
-    setSaving(true);
-    try {
-      await api.setFanSpeed(clamped);
-      await onUpdated();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const switchMode = async (next: 'auto' | 'manual') => {
+  const switchMode = (next: 'auto' | 'manual') => {
     if (next === mode) {
       return;
     }
-    setMode(next);
-    setSaving(true);
-    try {
-      await api.setControlMode(next);
-      await onUpdated();
-    } finally {
-      setSaving(false);
-    }
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    void onSetControlMode(next);
+  };
+
+  const applyFanSpeed = (next: number) => {
+    const clamped = Math.min(100, Math.max(0, next));
+    setLocalFanSpeed(clamped);
+    void onSetFanSpeed(clamped);
   };
 
   return (
@@ -81,12 +79,12 @@ export default function FanControlScreen({
         <ModeToggle
           mode={mode}
           onChange={switchMode}
-          saving={saving}
+          pending={modePending}
         />
 
         <View style={styles.fanBox}>
-          <FanSpinner speed={mode === 'auto' ? (status?.fanSpeed ?? 0) : fanSpeed} size={72} />
-          <Text style={styles.fanValue}>{status?.fanSpeed ?? fanSpeed} %</Text>
+          <FanSpinner speed={fanSpeed} size={72} />
+          <Text style={styles.fanValue}>{fanSpeed} %</Text>
           <Text style={styles.fanHint}>
             {mode === 'auto'
               ? 'Nhiệt cao → quạt quay nhanh hơn'
@@ -109,11 +107,11 @@ export default function FanControlScreen({
           <View style={styles.controlCard}>
             <Text style={styles.sectionTitle}>Chỉnh tốc độ quạt</Text>
             <View style={styles.stepRow}>
-              <StepButton label="-10" onPress={() => applyFanSpeed(fanSpeed - 10)} />
-              <StepButton label="-5" onPress={() => applyFanSpeed(fanSpeed - 5)} />
-              <Text style={styles.stepValue}>{fanSpeed}%</Text>
-              <StepButton label="+5" onPress={() => applyFanSpeed(fanSpeed + 5)} />
-              <StepButton label="+10" onPress={() => applyFanSpeed(fanSpeed + 10)} />
+              <StepButton label="-10" onPress={() => applyFanSpeed(localFanSpeed - 10)} />
+              <StepButton label="-5" onPress={() => applyFanSpeed(localFanSpeed - 5)} />
+              <Text style={styles.stepValue}>{localFanSpeed}%</Text>
+              <StepButton label="+5" onPress={() => applyFanSpeed(localFanSpeed + 5)} />
+              <StepButton label="+10" onPress={() => applyFanSpeed(localFanSpeed + 10)} />
             </View>
             <View style={styles.presetRow}>
               {[0, 30, 50, 70, 100].map((preset) => (
@@ -121,14 +119,14 @@ export default function FanControlScreen({
                   key={preset}
                   style={[
                     styles.presetButton,
-                    fanSpeed === preset && styles.presetButtonActive,
+                    localFanSpeed === preset && styles.presetButtonActive,
                   ]}
                   onPress={() => applyFanSpeed(preset)}
                 >
                   <Text
                     style={[
                       styles.presetText,
-                      fanSpeed === preset && styles.presetTextActive,
+                      localFanSpeed === preset && styles.presetTextActive,
                     ]}
                   >
                     {preset}%

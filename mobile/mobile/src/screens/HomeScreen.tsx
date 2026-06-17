@@ -66,16 +66,19 @@ export default function HomeScreen({
     pwm: 0,
     warning: 'Không có',
     controlMode: 'auto' as const,
+    dataSource: 'serial' as const,
+    deviceConnected: false,
+    rpm: 0,
+    targetRpm: 0,
+    faultCode: 0,
+    state: null,
   };
   const hasWarning = data.warning !== 'Không có';
   const fanModeLabel =
     data.controlMode === 'auto' ? 'Tự động theo nhiệt độ' : 'Điều khiển thủ công';
-  const sourceLabel =
-    data.dataSource === 'serial'
-      ? data.deviceConnected
-        ? 'STM32 đã kết nối'
-        : 'STM32 chưa kết nối'
-      : 'Mô phỏng backend';
+  const sourceLabel = data.deviceConnected
+    ? 'STM32 đã kết nối'
+    : 'STM32 chưa kết nối';
 
   const switchMode = (next: 'auto' | 'manual') => {
     if (next === data.controlMode) {
@@ -106,7 +109,7 @@ export default function HomeScreen({
       <View style={styles.sourceBanner}>
         <Text style={styles.sourceText}>
           {sourceLabel}
-          {data.rpm != null ? ` · ${data.rpm.toFixed(1)} RPM` : ''}
+          {` · ${(data.rpm ?? 0).toFixed(1)} RPM`}
           {data.state ? ` · ${data.state}` : ''}
         </Text>
       </View>

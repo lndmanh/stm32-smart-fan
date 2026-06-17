@@ -13,7 +13,7 @@ export class DeviceController {
   @Get('connection')
   connection() {
     return {
-      mode: this.serialBridge.isActive() ? 'serial' : 'simulator',
+      mode: 'serial',
       connected: this.serialBridge.isConnected(),
       sample: this.serialBridge.getLatestSample(),
     };

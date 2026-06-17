@@ -1,17 +1,14 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DeviceModule } from './device/device.module';
 import { SettingsModule } from './settings/settings.module';
-import { SimulatorModule } from './simulator/simulator.module';
 import { StatusModule } from './status/status.module';
 import { TelemetryModule } from './telemetry/telemetry.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -29,7 +26,6 @@ import { TelemetryModule } from './telemetry/telemetry.module';
     StatusModule,
     TelemetryModule,
     SettingsModule,
-    SimulatorModule,
   ],
 })
 export class AppModule {}

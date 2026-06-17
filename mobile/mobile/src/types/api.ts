@@ -4,11 +4,11 @@ export type MonitorStatus = {
   pwm: number;
   warning: string;
   controlMode: 'auto' | 'manual';
-  dataSource?: 'serial' | 'simulator';
+  dataSource?: 'serial';
   deviceConnected?: boolean;
-  rpm?: number | null;
-  targetRpm?: number | null;
-  faultCode?: number | null;
+  rpm?: number;
+  targetRpm?: number;
+  faultCode?: number;
   state?: string | null;
 };
 

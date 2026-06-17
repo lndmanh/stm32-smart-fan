@@ -21,16 +21,17 @@ export class StatusService implements OnModuleInit {
   async onModuleInit() {
     const count = await this.statusRepo.count();
     if (count === 0) {
-      await this.statusRepo.save(
-        this.statusRepo.create({
-          temperature: 78.3,
-          fanSpeed: 62,
-          pwm: 65,
-          warning: 'Không có',
-          controlMode: 'auto',
-        }),
-      );
+      await this.saveDefaults();
     }
+  }
+
+  async resetToZeros(): Promise<StatusResponse> {
+    return this.updateStatus({
+      temperature: 0,
+      fanSpeed: 0,
+      pwm: 0,
+      warning: 'Không có',
+    });
   }
 
   async getStatus(): Promise<StatusResponse> {
@@ -61,17 +62,21 @@ export class StatusService implements OnModuleInit {
   private async getOrCreate(): Promise<DeviceStatus> {
     let status = await this.statusRepo.findOne({ where: { id: 1 } });
     if (!status) {
-      status = await this.statusRepo.save(
-        this.statusRepo.create({
-          temperature: 78.3,
-          fanSpeed: 62,
-          pwm: 65,
-          warning: 'Không có',
-          controlMode: 'auto',
-        }),
-      );
+      status = await this.saveDefaults();
     }
     return status;
+  }
+
+  private async saveDefaults(): Promise<DeviceStatus> {
+    return this.statusRepo.save(
+      this.statusRepo.create({
+        temperature: 0,
+        fanSpeed: 0,
+        pwm: 0,
+        warning: 'Không có',
+        controlMode: 'auto',
+      }),
+    );
   }
 
   private toResponse(status: DeviceStatus): StatusResponse {

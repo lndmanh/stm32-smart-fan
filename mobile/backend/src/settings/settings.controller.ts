@@ -18,9 +18,7 @@ export class SettingsController {
   @Put('pid')
   async updatePidSettings(@Body() dto: UpdatePidSettingsDto) {
     const saved = await this.settingsService.updatePidSettings(dto);
-    if (this.serialBridge.isActive()) {
-      await this.serialBridge.applyPidSettings(dto.kp, dto.ki, dto.kd);
-    }
+    this.serialBridge.applyPidSettings(dto.kp, dto.ki, dto.kd);
     return saved;
   }
 }

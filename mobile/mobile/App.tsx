@@ -43,17 +43,20 @@ export default function App() {
           pwmPoints={monitor.pwmPoints}
           loading={monitor.loading}
           error={monitor.error}
+          modePending={monitor.modePending}
           onOpenSettings={() => setScreen('settings')}
           onOpenFanControl={() => setScreen('fan')}
-          onRefresh={monitor.refresh}
+          onSetControlMode={monitor.setControlMode}
         />
       ) : null}
       {screen === 'fan' ? (
         <FanControlScreen
           status={monitor.status}
           fanPoints={monitor.fanSpeedPoints}
+          modePending={monitor.modePending}
           onBack={() => setScreen('home')}
-          onUpdated={monitor.refresh}
+          onSetControlMode={monitor.setControlMode}
+          onSetFanSpeed={monitor.setFanSpeed}
         />
       ) : null}
       {screen === 'settings' ? (
