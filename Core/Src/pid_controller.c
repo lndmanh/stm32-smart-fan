@@ -14,13 +14,6 @@
 #define PID_KI           2.0f
 #define PID_KD           0.0f
 
-/* Stall protection — relaxed vs original (800 PWM / 200ms) for motor spin-up */
-#define STALL_PWM_THRESHOLD    1000
-#define STALL_SPEED_THRESHOLD  5.0f
-#define STALL_SETPOINT_MIN     20.0f
-#define STALL_TICKS_LIMIT      80U
-#define STALL_GRACE_MS         3000U
-
 volatile float setpoint = PID_SETPOINT_RPM;
 volatile float current_speed = 0.0f;
 volatile float pid_kp = PID_KP;
@@ -34,15 +27,9 @@ static float i_term = 0.0f;
 static float last_speed = 0.0f;
 static int32_t last_encoder_cnt = 0;
 static uint16_t stall_ticks = 0U;
-static uint32_t stall_grace_until_ms = 0U;
 
 static float abs_float(float value) {
     return value < 0.0f ? -value : value;
-}
-
-static void ArmStallGrace(void) {
-    stall_grace_until_ms = data_time_ms + STALL_GRACE_MS;
-    stall_ticks = 0U;
 }
 
 void PID_Control_Update(void) {
@@ -82,17 +69,11 @@ void PID_Control_Update(void) {
 
     pwm_duty = (int32_t)control_u;
 
-    if (data_time_ms >= stall_grace_until_ms) {
-        if (abs_float((float)pwm_duty) > (float)STALL_PWM_THRESHOLD &&
-            abs_float(current_speed) < STALL_SPEED_THRESHOLD &&
-            setpoint > STALL_SETPOINT_MIN) {
-            stall_ticks++;
-            if (stall_ticks >= STALL_TICKS_LIMIT) {
-                fault_code = 2U;
-                pwm_duty = 0;
-            }
-        } else {
-            stall_ticks = 0U;
+    if (abs_float((float)pwm_duty) > 800.0f && abs_float(current_speed) < 5.0f && setpoint > 20.0f) {
+        stall_ticks++;
+        if (stall_ticks >= 20U) {
+            fault_code = 2U;
+            pwm_duty = 0;
         }
     } else {
         stall_ticks = 0U;
@@ -107,10 +88,6 @@ void PID_SetTargetRPM(float rpm) {
         rpm = 0.0f;
     } else if (rpm > 190.0f) {
         rpm = 190.0f;
-    }
-
-    if (rpm != setpoint) {
-        ArmStallGrace();
     }
 
     setpoint = rpm;
@@ -133,7 +110,6 @@ void PID_ResetFaults(void) {
     i_term = 0.0f;
     last_speed = current_speed;
     stall_ticks = 0U;
-    ArmStallGrace();
 }
 
 const char *PID_GetStateName(void) {
