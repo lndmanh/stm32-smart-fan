@@ -8,6 +8,17 @@ from typing import Optional
 
 PWM_LIMIT = 1599
 
+# DS18B20-style sensors report sentinels such as -127 °C (disconnected) or 85 °C
+# (power-on default). Anything outside a sane physical band is treated as "no
+# reading" so a single bad sample cannot wreck the auto-scaled temperature chart.
+TEMP_VALID_MIN_C = -55.0
+TEMP_VALID_MAX_C = 150.0
+
+
+def temperature_is_valid(temp_c: float) -> bool:
+    """Return True when a temperature reading is within a plausible physical band."""
+    return TEMP_VALID_MIN_C <= temp_c <= TEMP_VALID_MAX_C
+
 
 @dataclass(frozen=True)
 class FanTelemetrySample:
