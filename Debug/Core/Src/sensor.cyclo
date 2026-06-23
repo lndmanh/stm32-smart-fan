@@ -1,0 +1,10 @@
+../Core/Src/sensor.c:21:13:delay_us	2
+../Core/Src/sensor.c:29:6:Sensor_Init	1
+../Core/Src/sensor.c:48:16:DS18B20_Reset	2
+../Core/Src/sensor.c:68:13:DS18B20_WriteBit	2
+../Core/Src/sensor.c:89:16:DS18B20_ReadBit	2
+../Core/Src/sensor.c:111:13:DS18B20_WriteByte	2
+../Core/Src/sensor.c:121:16:DS18B20_ReadByte	3
+../Core/Src/sensor.c:138:14:DS18B20_ReadRawTemperature	3
+../Core/Src/sensor.c:173:14:MovingAverageFilter	4
+../Core/Src/sensor.c:199:7:Sensor_ReadTemperature	2

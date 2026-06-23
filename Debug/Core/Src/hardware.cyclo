@@ -1,3 +1,7 @@
 ../Drivers/CMSIS/Include/core_cm4.h:1684:22:__NVIC_EnableIRQ	2
-../Core/Src/hardware.c:5:6:Set_Motor_Output	2
-../Core/Src/hardware.c:17:6:System_Init	1
+../Core/Src/hardware.c:10:6:Set_Motor_Output	2
+../Core/Src/hardware.c:22:6:System_Init	1
+../Core/Src/hardware.c:93:6:UART2_Init	1
+../Core/Src/hardware.c:102:5:UART2_ReadChar	2
+../Core/Src/hardware.c:111:6:UART2_WriteChar	2
+../Core/Src/hardware.c:118:6:UART2_WriteString	2

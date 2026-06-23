@@ -1,1 +1,10 @@
-../Core/Src/main.c:3:5:main	1
+../Core/Src/main.c:22:13:UART_WriteUnsigned	5
+../Core/Src/main.c:41:13:UART_WriteSigned	2
+../Core/Src/main.c:50:13:UART_WriteScaled	6
+../Core/Src/main.c:74:13:TemperatureControl_Update	5
+../Core/Src/main.c:156:13:SendTelemetry	1
+../Core/Src/main.c:179:13:SendHelp	1
+../Core/Src/main.c:183:13:SendAck	1
+../Core/Src/main.c:189:13:ProcessCommand	11
+../Core/Src/main.c:247:13:PollCommands	5
+../Core/Src/main.c:270:5:main	2

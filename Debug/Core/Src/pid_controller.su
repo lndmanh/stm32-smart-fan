@@ -1,1 +1,6 @@
-../Core/Src/pid_controller.c:15:6:TIM3_IRQHandler	32	static
+../Core/Src/pid_controller.c:31:14:abs_float	16	static
+../Core/Src/pid_controller.c:35:6:PID_Control_Update	32	static
+../Core/Src/pid_controller.c:86:6:PID_SetTargetRPM	16	static
+../Core/Src/pid_controller.c:96:6:PID_SetTunings	24	static
+../Core/Src/pid_controller.c:108:6:PID_ResetFaults	4	static
+../Core/Src/pid_controller.c:115:13:PID_GetStateName	4	static

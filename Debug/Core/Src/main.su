@@ -1,1 +1,10 @@
-../Core/Src/main.c:3:5:main	8	static
+../Core/Src/main.c:22:13:UART_WriteUnsigned	32	static
+../Core/Src/main.c:41:13:UART_WriteSigned	16	static
+../Core/Src/main.c:50:13:UART_WriteScaled	40	static
+../Core/Src/main.c:74:13:TemperatureControl_Update	40	static
+../Core/Src/main.c:156:13:SendTelemetry	16	static
+../Core/Src/main.c:179:13:SendHelp	8	static
+../Core/Src/main.c:183:13:SendAck	16	static
+../Core/Src/main.c:189:13:ProcessCommand	24	static
+../Core/Src/main.c:247:13:PollCommands	16	static
+../Core/Src/main.c:270:5:main	16	static
