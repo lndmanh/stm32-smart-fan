@@ -7,6 +7,20 @@
 
 #define UART_BAUD_RATE 115200U
 
+// Thêm 3 biến này để làm cái "kho" chứa dữ liệu
+volatile char rx_buffer[64];
+volatile uint8_t rx_head = 0;
+volatile uint8_t rx_tail = 0;
+
+// Hàm ngắt: Tự động được gọi mỗi khi có 1 ký tự gửi từ máy tính xuống
+void USART1_IRQHandler(void) {
+    if (USART1->SR & USART_SR_RXNE) {
+        char ch = (char)(USART1->DR & 0xFFU);
+        rx_buffer[rx_head] = ch;
+        rx_head = (rx_head + 1U) % 64U; // Vòng lặp lại nếu đầy
+    }
+}
+
 void Set_Motor_Output(int32_t u) {
     if (u >= 0) {
         GPIOA->ODR |= (1U << 9);
@@ -85,26 +99,30 @@ void System_Init(void) {
     TIM3->ARR = 9U;
     TIM3->DIER |= TIM_DIER_UIE;
     NVIC_EnableIRQ(TIM3_IRQn);
-    TIM3->CR1 |= TIM_CR1_CEN;
+TIM3->CR1 |= TIM_CR1_CEN;
 
     UART2_Init();
 }
 
 void UART2_Init(void) {
-    // Chuyển toàn bộ thao tác thanh ghi sang USART1
     USART1->CR1 = 0U;
     USART1->CR2 = 0U;
     USART1->CR3 = 0U;
     USART1->BRR = (SYS_CLOCK + (UART_BAUD_RATE / 2U)) / UART_BAUD_RATE;
-    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+
+    // 🔥 Bật thêm ngắt nhận dữ liệu (RXNEIE)
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE | USART_CR1_RXNEIE;
+    NVIC_EnableIRQ(USART1_IRQn);
 }
 
 int UART2_ReadChar(char *ch) {
-    if ((USART1->SR & USART_SR_RXNE) == 0U) {
-        return 0;
+    if (rx_head == rx_tail) {
+        return 0; // Kho rỗng, chưa có dữ liệu mới
     }
 
-    *ch = (char)(USART1->DR & 0xFFU);
+    // Có dữ liệu thì lấy ra từ kho
+    *ch = rx_buffer[rx_tail];
+    rx_tail = (rx_tail + 1U) % 64U;
     return 1;
 }
 

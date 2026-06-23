@@ -72,86 +72,43 @@ static void UART_WriteScaled(float value, uint32_t decimals) {
 }
 
 static void TemperatureControl_Update(void) {
-//    static uint32_t last_temperature_ms = 0U;
-//    uint32_t now = data_time_ms;
-//    float target_rpm = 0.0f;
-//
-//    if ((now - last_temperature_ms) < TEMP_CONTROL_PERIOD_MS) {
-//        return;
-//    }
-//    last_temperature_ms = now;
-//
-//    latest_temperature_c = Sensor_ReadTemperature();
-//
-//    if (latest_temperature_c == TEMP_SENSOR_ERROR_VALUE) {
-//        if (temperature_control_enabled != 0U) {
-//            PID_SetTargetRPM(0.0f);
-//        }
-//        return;
-//    }
-//
-//    if (latest_temperature_c <= FAN_TEMP_START_C) {
-//        target_rpm = 0.0f;
-//    } else if (latest_temperature_c >= FAN_TEMP_MAX_C) {
-//        target_rpm = FAN_MAX_RPM;
-//    } else {
-//        float ratio = (latest_temperature_c - FAN_TEMP_START_C) / (FAN_TEMP_MAX_C - FAN_TEMP_START_C);
-//        target_rpm = FAN_MIN_RPM + (ratio * (FAN_MAX_RPM - FAN_MIN_RPM));
-//    }
-//
-//    if (temperature_control_enabled != 0U) {
-//        PID_SetTargetRPM(target_rpm);
-//    }
-	static uint32_t last_temperature_ms = 0U;
+    static uint32_t last_temperature_ms = 0U;
+    uint32_t now = HAL_GetTick();
 
-	    // Sử dụng bộ đếm thời gian chuẩn của STM32 thay cho biến bị thiếu
-	    uint32_t now = HAL_GetTick();
+    const uint32_t TEMP_CONTROL_PERIOD_MS = 1000U;
+    const float FAN_TEMP_START_C = 20.0f;
+    const float FAN_TEMP_MAX_C   = 50.0f;
 
-	    // Tự định nghĩa lại các thông số cấu hình hệ thống
-	    const uint32_t TEMP_CONTROL_PERIOD_MS = 1000U; // Cập nhật mỗi 1000ms (1 giây)
-	    const float FAN_TEMP_START_C = 20.0f;          // Nhiệt độ quạt bắt đầu quay
-	    const float FAN_TEMP_MAX_C = 50.0f;            // Nhiệt độ quạt quay 100% công suất
-	    const float PWM_MIN = 400.0f;                  // Xung tối thiểu để quạt có đà quay
-	    const float PWM_MAX = 1599.0f;                 // Xung tối đa (100% công suất)
+    if ((now - last_temperature_ms) < TEMP_CONTROL_PERIOD_MS) {
+        return;
+    }
+    last_temperature_ms = now;
 
-	    int32_t target_pwm = 0;
+    latest_temperature_c = Sensor_ReadTemperature();
 
-	    // Kiểm tra xem đã đủ 1 giây chưa
-	    if ((now - last_temperature_ms) < TEMP_CONTROL_PERIOD_MS) {
-	        return;
-	    }
-	    last_temperature_ms = now;
+    // Manual mode: không can thiệp, để người dùng tự đặt target bằng lệnh 's'
+    if (temperature_control_enabled == 0U) {
+        return;
+    }
 
-	    // Đọc nhiệt độ từ cảm biến DS18B20
-	    latest_temperature_c = Sensor_ReadTemperature();
+    // Cảm biến lỗi -> dừng quạt an toàn
+    if (latest_temperature_c <= -100.0f) {
+        PID_SetTargetRPM(0.0f);
+        return;
+    }
 
-	    // ============================================
-	        // THÊM DÒNG NÀY ĐỂ GIẢ LẬP NHIỆT ĐỘ 35°C
-//	        latest_temperature_c = 30.0f;
-	        // ============================================
-
-	    // Nếu lỗi cảm biến (sensor.c trả về -1000) -> Tắt quạt an toàn
-	    if (latest_temperature_c <= -100.0f) {
-	        Set_Motor_Output(0);
-	        return;
-	    }
-
-	    // Phân luồng điều khiển PWM dựa trên nhiệt độ
-	    if (latest_temperature_c <= FAN_TEMP_START_C) {
-	        target_pwm = 0;
-	    } else if (latest_temperature_c >= FAN_TEMP_MAX_C) {
-	        target_pwm = (int32_t)PWM_MAX;
-	    } else {
-	        // Tính toán tỷ lệ tuyến tính (20-50 độ -> 400-1599 PWM)
-	        float ratio = (latest_temperature_c - FAN_TEMP_START_C) / (FAN_TEMP_MAX_C - FAN_TEMP_START_C);
-	        target_pwm = (int32_t)(PWM_MIN + (ratio * (PWM_MAX - PWM_MIN)));
-	    }
-
-	    // Xuất xung thẳng xuống mạch cầu H
-//	    target_pwm = 1200;
-	    pwm_duty = target_pwm;
-	    Set_Motor_Output(target_pwm);
+    float target_rpm;
+    if (latest_temperature_c <= FAN_TEMP_START_C) {
+        target_rpm = 0.0f;
+    } else if (latest_temperature_c >= FAN_TEMP_MAX_C) {
+        target_rpm = FAN_MAX_RPM;
+    } else {
+        float ratio = (latest_temperature_c - FAN_TEMP_START_C) / (FAN_TEMP_MAX_C - FAN_TEMP_START_C);
+        target_rpm = FAN_MIN_RPM + (ratio * (FAN_MAX_RPM - FAN_MIN_RPM));
+    }
+PID_SetTargetRPM(target_rpm);
 }
+
 
 static void SendTelemetry(void) {
     float rpm = current_speed;
@@ -225,11 +182,15 @@ static void ProcessCommand(char *cmd) {
             SendAck("kd");
             break;
         case 'x':
-        case 'X':
-            temperature_control_enabled = 0U;
-            PID_SetTargetRPM(0.0f);
-            SendAck("stop");
-            break;
+                case 'X':
+                    // Bật lại chế độ tự động theo nhiệt độ
+                    temperature_control_enabled = 1U;
+
+                    // Không cần PID_SetTargetRPM(0.0f) nữa vì hàm TemperatureControl_Update()
+                    // sẽ tự động tính toán và cập nhật lại RPM theo nhiệt độ ngay lập tức.
+
+                    SendAck("auto_mode_resumed"); // Đổi phản hồi để UI hoặc Log dễ nhận biết
+                    break;
         case 'r':
         case 'R':
             PID_ResetFaults();
@@ -262,7 +223,6 @@ static void PollCommands(void) {
         }
     }
 }
-
 // 🔥 1. ĐỊNH NGHĨA SỐ XUNG ENCODER TRÊN 1 VÒNG QUAY thực tế của motor bạn
 // (Ví dụ: Động cơ có encoder 11 xung, qua bộ giảm tốc tỷ lệ 1:30 thì 11 * 30 * 4 = 1320)
 // Bạn hãy thay số 1320 bằng tổng số xung đọc được khi xoay bánh quạt 1 vòng nhé.
