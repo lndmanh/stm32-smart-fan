@@ -9,6 +9,8 @@ from typing import Callable, Optional
 import serial
 import serial.tools.list_ports
 
+from connection_directory import PortInfo
+
 
 LineCallback = Callable[[str], None]
 StatusCallback = Callable[[str], None]
@@ -39,6 +41,24 @@ class SerialClient:
     @staticmethod
     def list_ports() -> list[str]:
         return [port.device for port in serial.tools.list_ports.comports()]
+
+    @staticmethod
+    def list_port_infos() -> list[PortInfo]:
+        """Structured port metadata for the friendly-name connection picker."""
+        infos = []
+        for port in serial.tools.list_ports.comports():
+            infos.append(
+                PortInfo(
+                    device=port.device,
+                    description=(getattr(port, "description", "") or ""),
+                    manufacturer=(getattr(port, "manufacturer", "") or ""),
+                    hwid=(getattr(port, "hwid", "") or ""),
+                    serial_number=getattr(port, "serial_number", None),
+                    vid=getattr(port, "vid", None),
+                    pid=getattr(port, "pid", None),
+                )
+            )
+        return infos
 
     @property
     def is_connected(self) -> bool:
