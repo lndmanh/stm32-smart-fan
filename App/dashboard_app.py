@@ -1,13 +1,15 @@
-"""Polished Tkinter dashboard for the STM32 smart-fan telemetry stream."""
+"""Polished CustomTkinter dashboard for the STM32 smart-fan telemetry stream."""
 
 from __future__ import annotations
 
 import math
 from queue import Empty, Queue
 from pathlib import Path
+from time import strftime
 import tkinter as tk
-from tkinter import font as tkfont, messagebox, ttk
+from tkinter import filedialog, messagebox
 
+import customtkinter as ctk
 import matplotlib
 
 matplotlib.use("TkAgg")
@@ -21,68 +23,35 @@ from command_protocol import (
     build_set_speed_command,
     build_stop_command,
 )
+from components import (
+    Button,
+    Card,
+    ConnectionDot,
+    Dropdown,
+    Field,
+    GroupCard,
+    MetricTile,
+    MicroLabel,
+    text_label,
+)
 from dashboard_state import DashboardState
 from serial_client import SerialClient
 from telemetry import is_legacy_odometry_line, parse_fan_telemetry_line
+from telemetry_recorder import TelemetryRecorder
+from theme import COLORS, RADIUS, SPACE, init_theme
 
 
 BAUD_RATE = 115200
 POLL_MS = 80
 MAX_LOG_LINES = 120
+SIDEBAR_WIDTH = 300
+RAIL_WIDTH = 58
 
-COLORS = {
-    # Cool, airy page + card system
-    "bg": "#E8F1FB",          # soft sky-tinted backdrop
-    "surface": "#FFFFFF",      # crisp white cards
-    "surface_alt": "#F1F6FD",  # nested tiles / soft inner surface
-    "border": "#DBE7F5",       # soft cool hairline border
-    "border_strong": "#C4D7EE",  # emphasised border for the hero card
-    # Cool slate ink
-    "text": "#15263D",         # deep navy-slate
-    "muted": "#566782",        # slate
-    "subtle": "#93A2B8",       # light slate
-    # Sky-blue primary
-    "accent": "#1E8FE6",       # vivid sky blue (primary)
-    "accent_dark": "#1573C0",  # hover / pressed
-    "accent_soft": "#DEEEFB",  # tinted fill for soft buttons & chips
-    "accent_tint": "#EFF6FE",  # faint sky wash (halo, highlights)
-    # Semantic
-    "success": "#15A06B",
-    "warning": "#E08A1E",
-    "error": "#E0524E",
-    "error_soft": "#FBE7E6",
-    # Charts
-    "chart": "#F6FAFE",
-    "grid": "#E2ECF8",
-}
-
-# UI fonts are resolved at runtime against the families actually installed, so
-# the dashboard prefers a modern grotesque and gracefully falls back otherwise.
-UI_FONT_CANDIDATES = ("Inter", "SF Pro Display", "Helvetica Neue", "Avenir Next")
-MONO_FONT_CANDIDATES = ("SF Mono", "Menlo", "Monaco", "Courier New")
-
-
-def resolve_font_family(candidates: tuple[str, ...], available: set[str]) -> str:
-    for name in candidates:
-        if name in available:
-            return name
-    return candidates[-1]
-
-
-def build_font_palette(ui_family: str, mono_family: str) -> dict[str, tuple]:
-    return {
-        "display": (ui_family, 40, "bold"),   # hero RPM readout
-        "heading": (ui_family, 26, "bold"),   # "Smart Fan" title
-        "title": (ui_family, 17, "bold"),     # panel titles
-        "section": (ui_family, 13, "bold"),   # chart / log headings
-        "group": (ui_family, 12, "bold"),     # footer group titles
-        "button": (ui_family, 11, "bold"),
-        "body": (ui_family, 12),
-        "small": (ui_family, 10),
-        "label": (ui_family, 9, "bold"),      # uppercase micro labels
-        "mono": (mono_family, 12),
-        "mono_big": (mono_family, 22, "bold"),
-    }
+# Fan animation: the hero fan spins at a rate proportional to live RPM and tints
+# red on a fault, so the illustration actually reports state instead of decorating.
+FAN_ANIM_MS = 50          # ~20 fps redraw of the rotating blades
+FAN_SPIN_GAIN = 0.22      # degrees advanced per frame, per RPM
+FAN_MAX_STEP_DEG = 42     # cap per-frame rotation to avoid strobing at high RPM
 
 FAN_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "fan_model.png"
 DASHBOARD_METRIC_KEYS = ("rpm", "rps", "target", "pwm", "temperature", "fault", "state")
@@ -139,71 +108,14 @@ def footer_action_sequence() -> tuple[str, ...]:
     return tuple(action for _, _, actions in FOOTER_CONTROL_GROUPS for action in actions)
 
 
-def _rounded_rect(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs) -> int:
-    radius = min(radius, max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2))
-    points = [
-        x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
-        x2, y2 - radius, x2, y2, x2 - radius, y2, x1 + radius, y2,
-        x1, y2, x1, y2 - radius, x1, y1 + radius, x1, y1,
-    ]
-    return canvas.create_polygon(points, smooth=True, **kwargs)
-
-
-class RoundedSurface(tk.Canvas):
-    """Canvas-backed surface that gives Tk widgets a rounded, softly elevated card shell."""
-
-    # Stepped offset layers (dx, dy, fill) approximate a soft drop shadow.
-    SHADOW = ((3, 7, "#CDDBEE"), (2, 4, "#D9E4F3"), (1, 2, "#E6EEF8"))
-    MARGIN = 8  # reserved canvas border so the shadow has room to fall
-
-    def __init__(self, parent, fill=COLORS["surface"], radius=24, inset=18, outline=None, shadow=True, **kwargs):
-        super().__init__(parent, bg=parent.cget("bg"), highlightthickness=0, bd=0, **kwargs)
-        self.fill = fill
-        self.radius = radius
-        self.inset = inset
-        self.outline = outline or COLORS["border"]
-        self.shadow = shadow
-        self.body = tk.Frame(self, bg=fill)
-        self._window = self.create_window(inset, inset, anchor="nw", window=self.body)
-        self.bind("<Configure>", self._draw)
-
-    def _draw(self, _event=None) -> None:
-        self.delete("surface")
-        width = max(2, self.winfo_width())
-        height = max(2, self.winfo_height())
-        m = self.MARGIN if self.shadow else 3
-        if self.shadow and width > 2 * m + 12 and height > 2 * m + 12:
-            for dx, dy, color in self.SHADOW:
-                _rounded_rect(self, m + dx, m + dy, width - m + dx, height - m + dy, self.radius, fill=color, outline="", tags="surface")
-        _rounded_rect(
-            self,
-            m,
-            m,
-            width - m,
-            height - m,
-            self.radius,
-            fill=self.fill,
-            outline=self.outline,
-            width=1,
-            tags="surface",
-        )
-        self.tag_lower("surface")
-        self.coords(self._window, self.inset, self.inset)
-        self.itemconfigure(self._window, width=max(1, width - self.inset * 2), height=max(1, height - self.inset * 2))
-
-
-class FanDashboardApp(tk.Tk):
+class FanDashboardApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
+        self.fonts = init_theme(self)
         self.title("STM32 Smart Fan Monitor")
-        self.geometry("1320x860")
+        self.geometry("1480x880")
         self.minsize(1160, 760)
-        self.configure(bg=COLORS["bg"])
-
-        available = set(tkfont.families(self))
-        self.ui_font = resolve_font_family(UI_FONT_CANDIDATES, available)
-        self.mono_font = resolve_font_family(MONO_FONT_CANDIDATES, available)
-        self.fonts = build_font_palette(self.ui_font, self.mono_font)
+        self.configure(fg_color=COLORS["bg"])
 
         self.state_model = DashboardState()
         self.events: Queue[tuple[str, object]] = Queue()
@@ -214,7 +126,7 @@ class FanDashboardApp(tk.Tk):
             on_error=lambda exc: self.events.put(("error", exc)),
         )
 
-        self.metric_labels: dict[str, tk.Label] = {}
+        self.metric_labels: dict[str, ctk.CTkLabel] = {}
         self.status_var = tk.StringVar(value="Disconnected")
         self.port_var = tk.StringVar()
         self.speed_var = tk.StringVar(value="120")
@@ -222,231 +134,222 @@ class FanDashboardApp(tk.Tk):
         self.pid_value_var = tk.StringVar(value="35")
         self.fan_image_ref: tk.PhotoImage | None = None
         self._fan_asset_attempted = False
+        self._fan_uses_asset = False
+        self._fan_angle = 0.0
+        self._fan_geom: tuple[float, float, float] | None = None
+        self._recorder: TelemetryRecorder | None = None
+        self._rendered_log_count = 0
+        self._sidebar_collapsed = False
 
-        self._build_styles()
         self._build_layout()
         self.refresh_ports()
         self._log("Dashboard ready. Connect to a serial port to begin.")
         self.after(POLL_MS, self._drain_events)
+        self.after(FAN_ANIM_MS, self._animate_fan)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_styles(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure(
-            "TCombobox",
-            fieldbackground=COLORS["accent_tint"],
-            background=COLORS["accent_tint"],
-            foreground=COLORS["text"],
-            bordercolor=COLORS["border"],
-            lightcolor=COLORS["border"],
-            darkcolor=COLORS["border"],
-            arrowcolor=COLORS["accent"],
-            arrowsize=14,
-            padding=4,
-            relief="flat",
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", COLORS["accent_tint"]), ("focus", COLORS["accent_tint"])],
-            foreground=[("readonly", COLORS["text"])],
-            bordercolor=[("focus", COLORS["accent"])],
-            arrowcolor=[("active", COLORS["accent_dark"])],
-        )
-        # Match the drop-down list to the sky palette.
-        self.option_add("*TCombobox*Listbox.background", COLORS["surface"])
-        self.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
-        self.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
-        self.option_add("*TCombobox*Listbox.selectForeground", "white")
-        self.option_add("*TCombobox*Listbox.font", self.fonts["body"])
-
+    # ------------------------------------------------------------------ layout
     def _build_layout(self) -> None:
-        shell = tk.Frame(self, bg=COLORS["bg"])
-        shell.pack(fill="both", expand=True, padx=24, pady=24)
-        shell.grid_columnconfigure(0, weight=1)
-        shell.grid_rowconfigure(0, weight=1)
+        self.shell = ctk.CTkFrame(self, fg_color="transparent")
+        self.shell.pack(fill="both", expand=True, padx=SPACE["xxl"], pady=SPACE["xxl"])
+        self.shell.grid_columnconfigure(0, weight=1)   # main content stretches
+        self.shell.grid_columnconfigure(1, weight=0, minsize=SIDEBAR_WIDTH)  # sidebar / rail
+        self.shell.grid_rowconfigure(0, weight=1)
 
-        cockpit = tk.Frame(shell, bg=COLORS["bg"])
-        cockpit.grid(row=0, column=0, sticky="nsew", pady=(0, 18))
+        cockpit = ctk.CTkFrame(self.shell, fg_color="transparent")
+        cockpit.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["lg"]))
         cockpit.grid_columnconfigure(0, weight=3)
         cockpit.grid_columnconfigure(1, weight=2)
         cockpit.grid_rowconfigure(0, weight=1)
 
         self._build_fan_stage(cockpit)
         self._build_analytics_panel(cockpit)
-        self._build_command_dock(shell)
+        self._build_control_sidebar(self.shell)
 
-    def _build_fan_stage(self, parent: tk.Frame) -> None:
-        stage = RoundedSurface(parent, fill=COLORS["surface"], radius=34, inset=28, outline=COLORS["border_strong"])
-        stage.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+    def _build_fan_stage(self, parent) -> None:
+        stage = Card(parent, fill=COLORS["surface"], radius=RADIUS["panel"], inset=SPACE["xl"], outline=COLORS["border_strong"])
+        stage.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["lg"]))
         body = stage.body
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(1, weight=1)
 
-        header = tk.Frame(body, bg=COLORS["surface"])
+        header = ctk.CTkFrame(body, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        tk.Label(header, text="Smart Fan", bg=COLORS["surface"], fg=COLORS["text"], font=self.fonts["heading"]).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        tk.Label(header, textvariable=self.status_var, bg=COLORS["surface"], fg=COLORS["muted"], font=self.fonts["body"]).grid(row=2, column=0, sticky="w", pady=(3, 0))
-        self.connection_dot = tk.Canvas(header, width=26, height=26, bg=COLORS["surface"], highlightthickness=0)
-        self.connection_dot.grid(row=0, column=1, rowspan=3, sticky="e", padx=(14, 0))
-        self._draw_connection_dot(False)
+        text_label(header, "Smart Fan", font="heading").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        text_label(header, font="body", fg="muted", textvariable=self.status_var).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        self.connection_dot = ConnectionDot(header)
+        self.connection_dot.grid(row=0, column=1, rowspan=3, sticky="e", padx=(SPACE["md"], 0))
 
         self.fan_canvas = tk.Canvas(body, bg=COLORS["surface"], highlightthickness=0, bd=0)
-        self.fan_canvas.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        self.fan_canvas.grid(row=1, column=0, sticky="nsew", pady=(SPACE["md"], 0))
         self._ensure_fan_stage_labels()
         self.fan_canvas.bind("<Configure>", self._draw_fan_stage)
 
-    def _build_analytics_panel(self, parent: tk.Frame) -> None:
-        panel = RoundedSurface(parent, fill=COLORS["surface"], radius=34, inset=20)
+    def _build_analytics_panel(self, parent) -> None:
+        panel = Card(parent, fill=COLORS["surface"], radius=RADIUS["panel"], inset=SPACE["lg"])
         panel.grid(row=0, column=1, sticky="nsew")
         body = panel.body
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(1, weight=0)   # metric tiles keep their natural height
-        body.grid_rowconfigure(2, weight=1)   # charts absorb the extra vertical space
-        body.grid_rowconfigure(3, weight=0)   # event log keeps its fixed height
+        body.grid_rowconfigure(2, weight=1)   # charts absorb the freed vertical space
 
-        tk.Label(body, text="Live analytics", bg=COLORS["surface"], fg=COLORS["text"], font=self.fonts["title"]).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        header = ctk.CTkFrame(body, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["sm"]))
+        header.grid_columnconfigure(0, weight=1)
+        text_label(header, "Live analytics", font="title").grid(row=0, column=0, sticky="w")
+        self.record_button = Button(header, command=self._toggle_recording, variant="secondary")
+        self.record_button.grid(row=0, column=1, sticky="e")
+        self._update_record_button(False)
 
-        summary = tk.Frame(body, bg=COLORS["surface"])
-        summary.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        summary = ctk.CTkFrame(body, fg_color="transparent")
+        summary.grid(row=1, column=0, sticky="ew", pady=(0, SPACE["sm"]))
         for column in range(3):
             summary.grid_columnconfigure(column, weight=1)
         for index, key in enumerate(("rps", "target", "pwm", "temperature", "fault", "state")):
-            self._metric_tile(summary, key, METRIC_CARD_TITLES[key], index)
+            tile = MetricTile(summary, METRIC_CARD_TITLES[key], self.fonts["mono"])
+            tile.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0 if index % 3 == 0 else SPACE["sm"], 0), pady=(0 if index < 3 else SPACE["sm"], 0))
+            self.metric_labels[key] = tile.value
 
-        charts = tk.Frame(body, bg=COLORS["surface"])
+        charts = ctk.CTkFrame(body, fg_color="transparent")
         charts.grid(row=2, column=0, sticky="nsew")
         charts.grid_columnconfigure(0, weight=1)
         charts.grid_rowconfigure(0, weight=1)
         charts.grid_rowconfigure(1, weight=1)
-        speed_card = RoundedSurface(charts, fill=COLORS["chart"], radius=20, inset=14, shadow=False)
-        speed_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-        temp_card = RoundedSurface(charts, fill=COLORS["chart"], radius=20, inset=14, shadow=False)
+        speed_card = Card(charts, fill=COLORS["chart"], radius=RADIUS["tile"], inset=SPACE["md"])
+        speed_card.grid(row=0, column=0, sticky="nsew", pady=(0, SPACE["sm"]))
+        temp_card = Card(charts, fill=COLORS["chart"], radius=RADIUS["tile"], inset=SPACE["md"])
         temp_card.grid(row=1, column=0, sticky="nsew")
         self.speed_ax, self.speed_canvas = self._chart(speed_card.body, "Speed vs target", "RPM", surface=COLORS["chart"])
         self.temp_ax, self.temp_canvas = self._chart(temp_card.body, "Temperature", "°C", surface=COLORS["chart"])
+        # Persistent line artists: refreshes call set_data() instead of clearing
+        # and re-plotting the whole axes on every telemetry sample.
+        (self._speed_line,) = self.speed_ax.plot([], [], color=COLORS["accent"], linewidth=2.2, label="Speed")
+        (self._target_line,) = self.speed_ax.plot([], [], color=COLORS["warning"], linewidth=1.8, linestyle="--", label="Target")
+        self.speed_ax.legend(loc="lower right", frameon=False, fontsize=8, labelcolor=COLORS["muted"])
+        (self._temp_line,) = self.temp_ax.plot([], [], color=COLORS["error"], linewidth=2.0)
 
-        log_card = RoundedSurface(body, fill=COLORS["surface_alt"], radius=20, inset=14, height=122, shadow=False)
-        log_card.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
-        tk.Label(log_card.body, text="Live event log", bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["section"]).pack(anchor="w", pady=(0, 8))
-        self.log_text = tk.Text(log_card.body, bg=COLORS["surface_alt"], fg=COLORS["text"], relief="flat", font=self.fonts["mono"], padx=8, pady=6, wrap="word", height=5)
-        self.log_text.pack(fill="both", expand=True)
+    def _build_control_sidebar(self, parent) -> None:
+        # Expanded sidebar: a tabbed panel (Controls / Event log) on the right
+        # that can be collapsed to a slim rail to give the charts more room.
+        self.sidebar = Card(parent, fill=COLORS["surface"], radius=RADIUS["card"], inset=SPACE["md"])
+        self.sidebar.grid(row=0, column=1, sticky="nsew")
+        body = self.sidebar.body
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(1, weight=1)  # tabview absorbs the height
+
+        header = ctk.CTkFrame(body, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["sm"]))
+        header.grid_columnconfigure(0, weight=1)
+        self._sidebar_toggle_button(header, "❯").grid(row=0, column=1, sticky="e")
+
+        tabs = ctk.CTkTabview(
+            body,
+            corner_radius=RADIUS["tile"],
+            border_width=0,
+            fg_color=COLORS["surface"],
+            segmented_button_fg_color=COLORS["surface_alt"],
+            segmented_button_selected_color=COLORS["accent_soft"],
+            segmented_button_selected_hover_color=COLORS["accent_softer"],
+            segmented_button_unselected_color=COLORS["surface_alt"],
+            segmented_button_unselected_hover_color=COLORS["accent_soft"],
+            text_color=COLORS["accent_dark"],
+        )
+        tabs.grid(row=1, column=0, sticky="nsew")
+        self._populate_controls_tab(tabs.add("Controls"))
+        self._populate_event_log_tab(tabs.add("Event log"))
+
+        # Collapsed rail: a slim card holding only the expand button.
+        self.sidebar_rail = Card(parent, fill=COLORS["surface"], radius=RADIUS["pill"], inset=SPACE["xs"])
+        rail_body = self.sidebar_rail.body
+        rail_body.grid_columnconfigure(0, weight=1)
+        self._sidebar_toggle_button(rail_body, "❮").grid(row=0, column=0, sticky="ew")
+        self.sidebar_rail.grid(row=0, column=1, sticky="nsew")
+        self.sidebar_rail.grid_remove()
+
+    def _populate_controls_tab(self, tab) -> None:
+        tab.grid_columnconfigure(0, weight=1)
+        for index, (group_id, title, actions) in enumerate(FOOTER_CONTROL_GROUPS):
+            group = GroupCard(tab, title)
+            group.grid(row=index, column=0, sticky="ew", pady=(SPACE["md"], 0))
+            self._build_control_group(group_id, group, actions)
+        tab.grid_rowconfigure(len(FOOTER_CONTROL_GROUPS), weight=1)  # keep groups top-aligned
+
+    def _populate_event_log_tab(self, tab) -> None:
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+        self.log_text = tk.Text(
+            tab,
+            bg=COLORS["surface_alt"],
+            fg=COLORS["text"],
+            relief="flat",
+            font=self.fonts["mono"],
+            padx=SPACE["sm"],
+            pady=SPACE["xs"] + 2,
+            wrap="word",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.log_text.grid(row=0, column=0, sticky="nsew", padx=SPACE["xs"], pady=SPACE["xs"])
         self.log_text.tag_configure("info", foreground=COLORS["muted"])
         self.log_text.tag_configure("success", foreground=COLORS["success"])
         self.log_text.tag_configure("warning", foreground=COLORS["warning"])
         self.log_text.tag_configure("error", foreground=COLORS["error"])
         self.log_text.configure(state="disabled")
 
-    def _build_command_dock(self, parent: tk.Frame) -> None:
-        dock = RoundedSurface(parent, fill=COLORS["surface"], radius=30, inset=18, height=154)
-        dock.grid(row=1, column=0, sticky="ew")
-        dock.grid_propagate(False)
-        body = dock.body
-        for column, (group_id, title, actions) in enumerate(FOOTER_CONTROL_GROUPS):
-            body.grid_columnconfigure(column, weight=1)
-            group = self._footer_group(body, title, self._footer_group_column_count(group_id))
-            group.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 10, 0))
-            self._build_footer_group_controls(group_id, group, actions)
+    def _toggle_sidebar(self) -> None:
+        if self._sidebar_collapsed:
+            self.sidebar_rail.grid_remove()
+            self.shell.grid_columnconfigure(1, minsize=SIDEBAR_WIDTH)
+            self.sidebar.grid()
+        else:
+            self.sidebar.grid_remove()
+            self.shell.grid_columnconfigure(1, minsize=RAIL_WIDTH)
+            self.sidebar_rail.grid()
+        self._sidebar_collapsed = not self._sidebar_collapsed
 
-    def _footer_group_column_count(self, group_id: str) -> int:
-        if group_id in ("connection", "speed"):
-            return 3
-        if group_id == "tuning":
-            return 5
-        raise ValueError(f"Unknown footer control group: {group_id}")
+    def _sidebar_toggle_button(self, parent, glyph: str) -> Button:
+        return Button(parent, text=glyph, command=self._toggle_sidebar, variant="secondary", width=36)
 
-    def _build_footer_group_controls(self, group_id: str, group: tk.Frame, actions: tuple[str, ...]) -> None:
+    def _action_button(self, parent, action: str, command) -> Button:
+        return Button(parent, text=FOOTER_ACTION_LABEL_MAP[action], command=command, variant=FOOTER_ACTION_ROLES[action])
+
+    def _build_control_group(self, group_id: str, group, actions: tuple[str, ...]) -> None:
+        pad = SPACE["md"]
+        gap = SPACE["xs"]
+        label_grid = dict(row=1, column=0, sticky="w", padx=pad, pady=(0, gap + 2))
+        left_btn = dict(sticky="ew", padx=(pad, gap), pady=(0, pad))
+        right_btn = dict(sticky="ew", padx=(gap, pad), pady=(0, pad))
         if group_id == "connection":
             refresh_action, connect_action = actions
-            self._footer_label(group, "Port", 1, 0)
-            self.port_combo = ttk.Combobox(group, textvariable=self.port_var, state="readonly", height=8, width=18)
-            self.port_combo.grid(row=2, column=0, sticky="ew", padx=(14, 8), pady=(0, 12), ipady=4)
-            self._footer_button(group, refresh_action, self.refresh_ports).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12))
-            self.connect_button = self._footer_button(group, connect_action, self.toggle_connection)
-            self.connect_button.grid(row=2, column=2, sticky="ew", padx=(0, 14), pady=(0, 12))
+            MicroLabel(group, "Port").grid(**label_grid)
+            self.port_combo = Dropdown(group, self.port_var, [""])
+            self.port_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, SPACE["sm"]))
+            self._action_button(group, refresh_action, self.refresh_ports).grid(row=3, column=0, **left_btn)
+            self.connect_button = self._action_button(group, connect_action, self.toggle_connection)
+            self.connect_button.grid(row=3, column=1, **right_btn)
             return
 
         if group_id == "speed":
             set_speed_action, stop_action = actions
-            self._footer_label(group, "Target RPM", 1, 0)
-            self._footer_input(group, self.speed_var).grid(row=2, column=0, sticky="ew", padx=(14, 8), pady=(0, 12), ipady=7)
-            self._footer_button(group, set_speed_action, self.send_speed_command).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12))
-            self._footer_button(group, stop_action, lambda: self.send_command(build_stop_command(), "Stop command sent")).grid(row=2, column=2, sticky="ew", padx=(0, 14), pady=(0, 12))
+            MicroLabel(group, "Target RPM").grid(**label_grid)
+            Field(group, self.speed_var).grid(row=2, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, SPACE["sm"]))
+            self._action_button(group, set_speed_action, self.send_speed_command).grid(row=3, column=0, **left_btn)
+            self._action_button(group, stop_action, lambda: self.send_command(build_stop_command(), "Stop command sent")).grid(row=3, column=1, **right_btn)
             return
 
         if group_id != "tuning":
-            raise ValueError(f"Unknown footer control group: {group_id}")
+            raise ValueError(f"Unknown control group: {group_id}")
 
         pid_action, reset_action, help_action = actions
-        self._footer_label(group, "PID", 1, 0)
-        ttk.Combobox(group, textvariable=self.pid_gain_var, values=("Kp", "Ki", "Kd"), state="readonly", width=5).grid(row=2, column=0, sticky="ew", padx=(14, 6), pady=(0, 12), ipady=4)
-        self._footer_input(group, self.pid_value_var, width=8).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 12), ipady=7)
-        self._footer_button(group, pid_action, self.send_pid_command).grid(row=2, column=2, sticky="ew", padx=(0, 8), pady=(0, 12))
-        self._footer_button(group, reset_action, lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(row=2, column=3, sticky="ew", padx=(0, 8), pady=(0, 12))
-        self._footer_button(group, help_action, lambda: self.send_command(build_help_command(), "Help command sent")).grid(row=2, column=4, sticky="ew", padx=(0, 14), pady=(0, 12))
+        MicroLabel(group, "PID").grid(**label_grid)
+        Dropdown(group, self.pid_gain_var, ("Kp", "Ki", "Kd")).grid(row=2, column=0, sticky="ew", padx=(pad, gap), pady=(0, SPACE["sm"]))
+        Field(group, self.pid_value_var).grid(row=2, column=1, sticky="ew", padx=(gap, pad), pady=(0, SPACE["sm"]))
+        self._action_button(group, pid_action, self.send_pid_command).grid(row=3, column=0, **left_btn)
+        self._action_button(group, reset_action, lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(row=3, column=1, **right_btn)
+        self._action_button(group, help_action, lambda: self.send_command(build_help_command(), "Help command sent")).grid(row=4, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, pad))
 
-    def _footer_group(self, parent: tk.Frame, title: str, column_count: int) -> tk.Frame:
-        group = tk.Frame(parent, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
-        for column in range(column_count):
-            group.grid_columnconfigure(column, weight=1)
-        tk.Label(group, text=title, bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["group"]).grid(row=0, column=0, columnspan=column_count, sticky="w", padx=14, pady=(10, 6))
-        return group
-
-    def _footer_button(self, parent: tk.Frame, action: str, command) -> tk.Button:
-        palette = self._footer_button_palette(action)
-        return tk.Button(
-            parent,
-            text=FOOTER_ACTION_LABEL_MAP[action],
-            command=command,
-            bg=palette[0],
-            fg=palette[1],
-            activebackground=palette[2],
-            activeforeground=palette[1],
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=palette[2],
-            font=self.fonts["button"],
-            padx=12,
-            pady=8,
-            cursor="hand2",
-        )
-
-    def _footer_button_palette(self, action: str) -> tuple[str, str, str]:
-        role = FOOTER_ACTION_ROLES[action]
-        return {
-            "primary": (COLORS["accent"], "white", COLORS["accent_dark"]),
-            "secondary": (COLORS["accent_soft"], COLORS["accent_dark"], "#CADFF6"),
-            "danger": (COLORS["error_soft"], COLORS["error"], "#F4CFCD"),
-        }[role]
-
-    def _footer_input(self, parent: tk.Frame, textvariable: tk.StringVar, width: int = 10) -> tk.Entry:
-        return tk.Entry(
-            parent,
-            textvariable=textvariable,
-            width=width,
-            bg=COLORS["accent_tint"],
-            fg=COLORS["text"],
-            relief="flat",
-            font=self.fonts["mono"],
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
-            highlightcolor=COLORS["accent"],
-            insertbackground=COLORS["accent"],
-        )
-
-    def _footer_label(self, parent: tk.Frame, text: str, row: int, column: int) -> None:
-        tk.Label(parent, text=text.upper(), bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).grid(row=row, column=column, sticky="w", padx=14 if column == 0 else 0, pady=(0, 6))
-
-    def _metric_tile(self, parent: tk.Frame, key: str, title: str, index: int) -> None:
-        tile = tk.Frame(parent, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
-        tile.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0 if index % 3 == 0 else 8, 0), pady=(0 if index < 3 else 8, 0))
-        tk.Label(tile, text=title.upper(), bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).pack(anchor="w", padx=10, pady=(6, 0))
-        self.metric_labels[key] = tk.Label(tile, text="--", bg=COLORS["surface_alt"], fg=COLORS["text"], font=self.fonts["mono"])
-        self.metric_labels[key].pack(anchor="w", padx=10, pady=(1, 6))
-
-    def _ensure_fan_stage_labels(self) -> dict[str, tk.Label]:
+    def _ensure_fan_stage_labels(self) -> dict[str, MetricTile]:
         if hasattr(self, "fan_stage_labels"):
             return self.fan_stage_labels
         self.fan_stage_labels = {}
@@ -459,24 +362,21 @@ class FanDashboardApp(tk.Tk):
             ("fault", "FAULT", self.fonts["mono"]),
         )
         for key, title, font in specs:
-            chip = tk.Frame(self.fan_canvas, bg=COLORS["surface_alt"], highlightthickness=1, highlightbackground=COLORS["border"])
-            tk.Label(chip, text=title, bg=COLORS["surface_alt"], fg=COLORS["subtle"], font=self.fonts["label"]).pack(anchor="w", padx=12, pady=(8, 0))
-            label = tk.Label(chip, text="--", bg=COLORS["surface_alt"], fg=COLORS["text"], font=font)
-            label.pack(anchor="w", padx=12, pady=(0, 8))
+            chip = MetricTile(self.fan_canvas, title, font)
             self.fan_stage_labels[key] = chip
-            self.fan_stage_metric_labels[key] = label
+            self.fan_stage_metric_labels[key] = chip.value
             if key not in self.metric_labels:
-                self.metric_labels[key] = label
+                self.metric_labels[key] = chip.value
         return self.fan_stage_labels
 
+    # -------------------------------------------------------------- fan canvas
     def _draw_fan_stage(self, _event=None) -> None:
         canvas = self.fan_canvas
-        canvas.delete("fan_art")
+        canvas.delete("fan_static")
         width = max(320, canvas.winfo_width())
         height = max(320, canvas.winfo_height())
         cx, cy = width * 0.48, height * 0.52
 
-        loaded_asset = False
         if not self._fan_asset_attempted:
             self._fan_asset_attempted = True
             if fan_asset_is_available():
@@ -484,14 +384,18 @@ class FanDashboardApp(tk.Tk):
                     self.fan_image_ref = tk.PhotoImage(file=str(FAN_ASSET_PATH))
                 except tk.TclError:
                     self.fan_image_ref = None
+        self._fan_uses_asset = False
         if self.fan_image_ref is not None:
             try:
-                canvas.create_image(cx, cy, image=self.fan_image_ref, tags="fan_art")
-                loaded_asset = True
+                canvas.delete("fan_image")
+                canvas.create_image(cx, cy, image=self.fan_image_ref, tags=("fan_art", "fan_static", "fan_image"))
+                self._fan_uses_asset = True
             except tk.TclError:
                 self.fan_image_ref = None
-        if not loaded_asset:
-            self._draw_fallback_fan(canvas, cx, cy, min(width, height) * 0.32)
+        if not self._fan_uses_asset:
+            radius = min(width, height) * 0.32
+            self._fan_geom = (cx, cy, radius)
+            self._draw_fan_decor(canvas, cx, cy, radius)
         canvas.tag_lower("fan_art")
 
         chips = self._ensure_fan_stage_labels()
@@ -504,48 +408,74 @@ class FanDashboardApp(tk.Tk):
             else:
                 canvas.coords(window, x, y)
         canvas.tag_raise("stage_chip")
+        self._draw_fan_blades()
 
-    def _draw_fallback_fan(self, canvas: tk.Canvas, cx: float, cy: float, radius: float) -> None:
-        # Soft sky halo so the fan reads as the hero element on the white stage.
+    def _draw_fan_decor(self, canvas: tk.Canvas, cx: float, cy: float, radius: float) -> None:
+        # Static halo, rings and arcs. Soft sky so the fan reads as the hero.
         glow = radius * 1.55
-        canvas.create_oval(cx - glow, cy - glow, cx + glow, cy + glow, fill=COLORS["accent_tint"], outline="", tags="fan_art")
-        for scale, color, width in ((1.34, "#CFE0F4", 2), (1.06, "#BBD3EE", 2), (0.74, "#DEEAF8", 1)):
+        canvas.create_oval(cx - glow, cy - glow, cx + glow, cy + glow, fill=COLORS["accent_tint"], outline="", tags=("fan_art", "fan_static"))
+        for scale, color, width in ((1.34, "#DBE7F8", 2), (1.06, "#C3D6F0", 2), (0.74, "#E6EEFA", 1)):
             r = radius * scale
-            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=width, tags="fan_art")
+            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=width, tags=("fan_art", "fan_static"))
         for start in (18, 138, 258):
-            canvas.create_arc(cx - radius * 1.62, cy - radius * 1.62, cx + radius * 1.62, cy + radius * 1.62, start=start, extent=44, style="arc", outline="#A6CDF0", width=3, tags="fan_art")
-        for angle in (20, 140, 260):
+            canvas.create_arc(cx - radius * 1.62, cy - radius * 1.62, cx + radius * 1.62, cy + radius * 1.62, start=start, extent=44, style="arc", outline="#AFC9F0", width=3, tags=("fan_art", "fan_static"))
+
+    def _draw_fan_blades(self) -> None:
+        # Rotating blades + hub, redrawn each animation frame at the current angle.
+        canvas = self.fan_canvas
+        canvas.delete("fan_blades")
+        geom = self._fan_geom
+        if geom is None or self._fan_uses_asset:
+            return
+        cx, cy, radius = geom
+        fault = bool(self.state_model.latest and self.state_model.latest.fault_code)
+        blade_fill = COLORS["error_soft"] if fault else "#FFFFFF"
+        blade_outline = COLORS["error"] if fault else "#B7CDF0"
+        for base_angle in (20, 140, 260):
+            angle = base_angle + self._fan_angle
             blade = []
             for dist, offset in ((0.18, -22), (1.02, -10), (1.15, 24), (0.22, 26)):
                 radians = math.radians(angle + offset)
                 blade.extend((cx + radius * dist * math.cos(radians), cy + radius * dist * math.sin(radians)))
-            canvas.create_polygon(blade, smooth=True, fill="#FFFFFF", outline="#AFCDEE", width=2, tags="fan_art")
+            canvas.create_polygon(blade, smooth=True, fill=blade_fill, outline=blade_outline, width=2, tags=("fan_art", "fan_blades"))
         hub = radius * 0.24
-        canvas.create_oval(cx - hub, cy - hub, cx + hub, cy + hub, fill="#FFFFFF", outline="#9CC2EA", width=2, tags="fan_art")
-        canvas.create_oval(cx - hub * 0.46, cy - hub * 0.46, cx + hub * 0.46, cy + hub * 0.46, fill=COLORS["accent"], outline="", tags="fan_art")
+        canvas.create_oval(cx - hub, cy - hub, cx + hub, cy + hub, fill="#FFFFFF", outline=(COLORS["error_softer"] if fault else "#A6C0EC"), width=2, tags=("fan_art", "fan_blades"))
+        accent = COLORS["error"] if fault else COLORS["accent"]
+        canvas.create_oval(cx - hub * 0.46, cy - hub * 0.46, cx + hub * 0.46, cy + hub * 0.46, fill=accent, outline="", tags=("fan_art", "fan_blades"))
+        canvas.tag_raise("stage_chip")
 
-    def _chart(self, parent: tk.Frame, title: str, ylabel: str, surface: str = COLORS["surface"]) -> tuple[object, FigureCanvasTkAgg]:
-        tk.Label(parent, text=title, bg=surface, fg=COLORS["text"], font=self.fonts["section"]).pack(anchor="w")
+    def _animate_fan(self) -> None:
+        rpm = 0.0
+        if self.serial_client.is_connected and self.state_model.latest is not None:
+            rpm = max(0.0, self.state_model.latest.rpm)
+        self._fan_angle = (self._fan_angle + min(rpm * FAN_SPIN_GAIN, FAN_MAX_STEP_DEG)) % 360
+        self._draw_fan_blades()
+        self.after(FAN_ANIM_MS, self._animate_fan)
+
+    def _chart(self, parent, title: str, ylabel: str, surface: str = COLORS["surface"]) -> tuple[object, FigureCanvasTkAgg]:
+        text_label(parent, title, font="section", bg=surface).pack(anchor="w")
         fig = Figure(figsize=(6, 2.1), dpi=100, facecolor=surface)
         ax = fig.add_subplot(111)
         ax.set_facecolor(COLORS["chart"])
         ax.tick_params(colors=COLORS["muted"], labelsize=9)
+        ax.set_xlabel("seconds", color=COLORS["muted"], fontsize=9)
         ax.set_ylabel(ylabel, color=COLORS["muted"], fontsize=9)
         ax.grid(True, color=COLORS["grid"], linewidth=0.8)
         for spine in ax.spines.values():
             spine.set_color(COLORS["border"])
         fig.tight_layout(pad=1.5)
         canvas = FigureCanvasTkAgg(fig, master=parent)
-        canvas.get_tk_widget().pack(fill="both", expand=True, pady=(8, 0))
+        canvas.get_tk_widget().pack(fill="both", expand=True, pady=(SPACE["sm"], 0))
         return ax, canvas
 
+    # ----------------------------------------------------------- serial / cmds
     def refresh_ports(self) -> None:
         try:
             ports = SerialClient.list_ports()
         except Exception as exc:
             self._log(f"Port scan failed: {exc}", "error")
             ports = []
-        self.port_combo["values"] = ports
+        self.port_combo.configure(values=ports if ports else [""])
         if ports and self.port_var.get() not in ports:
             self.port_var.set(ports[0])
         elif not ports:
@@ -590,29 +520,94 @@ class FanDashboardApp(tk.Tk):
         except Exception as exc:
             self._log(f"Command send failed: {exc}", "error")
 
+    # ------------------------------------------------------------- recording
+    def _toggle_recording(self) -> None:
+        if self._recorder is not None and self._recorder.is_recording:
+            path = self._recorder.path
+            rows = self._recorder.rows_written
+            self._recorder.stop()
+            self._recorder = None
+            self._update_record_button(False)
+            self._log(f"Recording saved: {path} ({rows} rows)", "success")
+            return
+
+        default_name = strftime("fan_telemetry_%Y%m%d_%H%M%S.csv")
+        path = filedialog.asksaveasfilename(
+            title="Save telemetry recording",
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        recorder = TelemetryRecorder(path)
+        try:
+            recorder.start()
+        except OSError as exc:
+            self._log(f"Could not start recording: {exc}", "error")
+            return
+        self._recorder = recorder
+        self._update_record_button(True)
+        self._log(f"Recording telemetry to {path}", "success")
+
+    def _record_sample(self, sample) -> None:
+        if self._recorder is None or not self._recorder.is_recording:
+            return
+        try:
+            self._recorder.write_sample(sample)
+        except OSError as exc:
+            self._recorder.stop()
+            self._recorder = None
+            self._update_record_button(False)
+            self._log(f"Recording stopped (write failed): {exc}", "error")
+
+    def _update_record_button(self, recording: bool) -> None:
+        if recording:
+            self.record_button.configure(text="■ Stop recording")
+            self.record_button.set_variant("danger")
+        else:
+            self.record_button.configure(text="● Record CSV")
+            self.record_button.set_variant("secondary")
+
+    # ----------------------------------------------------------- event pump
     def _drain_events(self) -> None:
+        # Drain the whole queue, then render once: a burst of telemetry lines
+        # triggers a single dashboard refresh instead of one per line.
+        dashboard_dirty = False
         try:
             while True:
                 kind, payload = self.events.get_nowait()
                 if kind == "line":
-                    self._handle_line(str(payload))
+                    if self._handle_line(str(payload)):
+                        dashboard_dirty = True
                 elif kind == "status":
-                    self._log(str(payload), "success" if self.serial_client.is_connected else "info")
-                    self.status_var.set(str(payload))
+                    self._handle_status(str(payload))
                 elif kind == "error":
                     self._log(f"Serial error: {payload}", "error")
         except Empty:
             pass
+        if dashboard_dirty:
+            self._refresh_dashboard()
         self.after(POLL_MS, self._drain_events)
 
-    def _handle_line(self, line: str) -> None:
+    def _handle_status(self, message: str) -> None:
+        connected = self.serial_client.is_connected
+        self._log(message, "success" if connected else "info")
+        # An unexpected drop (device unplugged) arrives as a status while the
+        # button still reads "Disconnect" — flip the UI back to a clean state.
+        if not connected and self.connect_button.cget("text") == "Disconnect":
+            self._set_connected(False)
+        self.status_var.set(message)
+
+    def _handle_line(self, line: str) -> bool:
         sample = parse_fan_telemetry_line(line)
         if sample is not None:
             self.state_model.apply_sample(sample)
-            self._refresh_dashboard()
-            return
+            self._record_sample(sample)
+            return True
         level = "warning" if is_legacy_odometry_line(line) else "info"
         self._log(line, level)
+        return False
 
     def _refresh_dashboard(self) -> None:
         snapshot = self.state_model.metric_snapshot()
@@ -622,81 +617,76 @@ class FanDashboardApp(tk.Tk):
             if hasattr(self, "fan_stage_metric_labels") and key in self.fan_stage_metric_labels:
                 self.fan_stage_metric_labels[key].configure(text=value)
         fault = self.state_model.latest.fault_code if self.state_model.latest else 0
-        self.metric_labels["fault"].configure(fg=COLORS["error"] if fault else COLORS["success"])
+        fault_color = COLORS["error"] if fault else COLORS["success"]
+        self.metric_labels["fault"].configure(text_color=fault_color)
         if hasattr(self, "fan_stage_metric_labels"):
-            self.fan_stage_metric_labels["fault"].configure(fg=COLORS["error"] if fault else COLORS["success"])
+            self.fan_stage_metric_labels["fault"].configure(text_color=fault_color)
         self.status_var.set(self.state_model.connection_label)
-        self._draw_connection_dot(True)
+        self.connection_dot.set(True)
         self._refresh_charts()
         self._sync_logs()
 
     def _refresh_charts(self) -> None:
         speed_points = self.state_model.speed_points
         temp_points = self.state_model.temperature_points
-        self.speed_ax.clear()
-        self.temp_ax.clear()
-        self._style_axes(self.speed_ax, "RPM")
-        self._style_axes(self.temp_ax, "°C")
         if speed_points:
             base = speed_points[0][0]
             xs = [(point[0] - base) / 1000 for point in speed_points]
-            rpm = [point[1] for point in speed_points]
-            target = [point[2] for point in speed_points]
-            self.speed_ax.plot(xs, rpm, color=COLORS["accent"], linewidth=2.2, label="Speed")
-            self.speed_ax.plot(xs, target, color=COLORS["warning"], linewidth=1.8, linestyle="--", label="Target")
-            self.speed_ax.legend(loc="lower right", frameon=False, fontsize=8, labelcolor=COLORS["muted"])
+            self._speed_line.set_data(xs, [point[1] for point in speed_points])
+            self._target_line.set_data(xs, [point[2] for point in speed_points])
+            self.speed_ax.relim()
+            self.speed_ax.autoscale_view()
         if temp_points:
             base = temp_points[0][0]
             xs = [(point[0] - base) / 1000 for point in temp_points]
-            temps = [point[1] for point in temp_points]
-            self.temp_ax.plot(xs, temps, color=COLORS["error"], linewidth=2.0)
+            self._temp_line.set_data(xs, [point[1] for point in temp_points])
+            self.temp_ax.relim()
+            self.temp_ax.autoscale_view()
         self.speed_canvas.draw_idle()
         self.temp_canvas.draw_idle()
 
-    def _style_axes(self, ax, ylabel: str) -> None:
-        ax.set_facecolor(COLORS["chart"])
-        ax.set_xlabel("seconds", color=COLORS["muted"], fontsize=9)
-        ax.set_ylabel(ylabel, color=COLORS["muted"], fontsize=9)
-        ax.tick_params(colors=COLORS["muted"], labelsize=9)
-        ax.grid(True, color=COLORS["grid"], linewidth=0.8)
-        for spine in ax.spines.values():
-            spine.set_color(COLORS["border"])
-
+    # ----------------------------------------------------------------- logging
     def _log(self, message: str, level: str = "info") -> None:
         self.state_model.add_log(message, level)
         if hasattr(self, "log_text"):
             self._sync_logs()
 
     def _sync_logs(self) -> None:
+        total = self.state_model.log_count
+        new = total - self._rendered_log_count
+        if new <= 0:
+            return
+        logs = self.state_model.logs
+        new = min(new, len(logs))
+        at_bottom = self._log_at_bottom()
         self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        for entry in self.state_model.logs[-MAX_LOG_LINES:]:
+        for entry in logs[-new:]:
             self.log_text.insert("end", f"{entry.timestamp}  {entry.message}\n", entry.level)
-        self.log_text.see("end")
+        line_count = int(self.log_text.index("end-1c").split(".")[0])
+        if line_count > MAX_LOG_LINES:
+            self.log_text.delete("1.0", f"{line_count - MAX_LOG_LINES + 1}.0")
         self.log_text.configure(state="disabled")
+        self._rendered_log_count = total
+        if at_bottom:
+            self.log_text.see("end")
+
+    def _log_at_bottom(self) -> bool:
+        # Only autoscroll when the user is already at the tail; don't yank them
+        # back down while they're scrolled up reading an earlier entry.
+        try:
+            return self.log_text.yview()[1] >= 0.999
+        except tk.TclError:
+            return True
 
     def _set_connected(self, connected: bool) -> None:
-        palette = self._footer_button_palette("stop" if connected else "connect")
-        self.connect_button.configure(
-            text="Disconnect" if connected else FOOTER_ACTION_LABEL_MAP["connect"],
-            bg=palette[0],
-            fg=palette[1],
-            activebackground=palette[2],
-            activeforeground=palette[1],
-            highlightbackground=palette[2],
-        )
+        self.connect_button.configure(text="Disconnect" if connected else FOOTER_ACTION_LABEL_MAP["connect"])
+        self.connect_button.set_variant("danger" if connected else "primary")
         self.status_var.set("Connected" if connected else "Disconnected")
-        self._draw_connection_dot(connected)
-
-    def _draw_connection_dot(self, connected: bool) -> None:
-        canvas = self.connection_dot
-        canvas.delete("all")
-        ring = "#D7F0E5" if connected else "#E4EAF2"
-        dot = COLORS["success"] if connected else COLORS["subtle"]
-        canvas.create_oval(2, 2, 24, 24, fill=ring, outline="")
-        canvas.create_oval(8, 8, 18, 18, fill=dot, outline="")
+        self.connection_dot.set(connected)
 
     def _on_close(self) -> None:
+        if self._recorder is not None and self._recorder.is_recording:
+            self._recorder.stop()
         try:
             self.serial_client.disconnect()
         finally:
