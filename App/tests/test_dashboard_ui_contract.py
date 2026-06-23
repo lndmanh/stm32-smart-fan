@@ -82,6 +82,20 @@ class DashboardUIContractTests(unittest.TestCase):
         self.assertTrue(hasattr(dashboard_app, "fan_asset_is_available"))
         self.assertFalse(dashboard_app.fan_asset_is_available(missing_asset))
 
+    def test_fan_modes_expose_auto_and_manual(self):
+        self.assertEqual(dashboard_app.FAN_MODES, (("auto", "Auto"), ("manual", "Manual")))
+        self.assertEqual(dashboard_app.DEFAULT_MODE, "auto")  # firmware powers up in temp control
+
+    def test_mode_command_builders_match_firmware(self):
+        builders = dashboard_app.MODE_COMMAND_BUILDERS
+
+        self.assertEqual(set(builders), {mode_id for mode_id, _ in dashboard_app.FAN_MODES})
+        self.assertEqual(builders["auto"](), "a\n")
+        self.assertEqual(builders["manual"](), "m\n")
+
+    def test_event_log_tab_is_not_a_mode(self):
+        self.assertNotIn(dashboard_app.EVENT_LOG_TAB_LABEL, dashboard_app.MODE_TAB_LABELS)
+
     def test_fan_stage_chip_layout_places_overlays_consistently(self):
         self.assertTrue(hasattr(dashboard_app, "fan_stage_chip_layout"))
 

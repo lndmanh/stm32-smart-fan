@@ -16,8 +16,15 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from auto_curve import (
+    AUTO_TEMP_FULL_C,
+    AUTO_TEMP_START_C,
+    temperature_to_duty_percent,
+)
 from command_protocol import (
+    build_auto_mode_command,
     build_help_command,
+    build_manual_mode_command,
     build_pid_command,
     build_reset_faults_command,
     build_set_speed_command,
@@ -32,11 +39,18 @@ from components import (
     GroupCard,
     MetricTile,
     MicroLabel,
+    TemperatureHighlightCard,
     text_label,
 )
+from app_settings import SettingsStore, default_settings_path
+from connection_directory import PortChoice, build_port_choices
 from dashboard_state import DashboardState
 from serial_client import SerialClient
-from telemetry import is_legacy_odometry_line, parse_fan_telemetry_line
+from telemetry import (
+    is_legacy_odometry_line,
+    parse_fan_telemetry_line,
+    temperature_is_valid,
+)
 from telemetry_recorder import TelemetryRecorder
 from theme import COLORS, RADIUS, SPACE, init_theme
 
@@ -89,6 +103,27 @@ METRIC_CARD_TITLES = {
     "state": "State",
 }
 
+# Two operating modes, surfaced as sidebar tabs. "auto" hands speed to the
+# firmware's temperature curve (an indicator-only view); "manual" lets the user
+# drive target RPM and PID tuning. The board powers up in temperature control,
+# so the dashboard defaults to Auto to stay in sync with the firmware.
+FAN_MODES = (("auto", "Auto"), ("manual", "Manual"))
+DEFAULT_MODE = "auto"
+MODE_COMMAND_BUILDERS = {
+    "auto": build_auto_mode_command,
+    "manual": build_manual_mode_command,
+}
+MODE_TAB_LABELS = {label: mode_id for mode_id, label in FAN_MODES}
+MODE_STATUS_LABELS = {"auto": "Auto · temperature curve", "manual": "Manual control"}
+# Single-glyph labels for the collapsed rail's icon-only mode switch.
+MODE_RAIL_GLYPHS = {"auto": "A", "manual": "M"}
+EVENT_LOG_TAB_LABEL = "Event log"
+
+# Lookup over the control-group registry so a mode can pull a group by id.
+FOOTER_CONTROL_GROUP_MAP = {
+    group_id: (title, actions) for group_id, title, actions in FOOTER_CONTROL_GROUPS
+}
+
 
 def fan_asset_is_available(asset_path: Path = FAN_ASSET_PATH) -> bool:
     return asset_path.is_file()
@@ -109,12 +144,14 @@ def footer_action_sequence() -> tuple[str, ...]:
 
 
 class FanDashboardApp(ctk.CTk):
+    NO_PORTS_LABEL = "No devices found"
+
     def __init__(self) -> None:
         super().__init__()
         self.fonts = init_theme(self)
         self.title("STM32 Smart Fan Monitor")
         self.geometry("1480x880")
-        self.minsize(1160, 760)
+        self.minsize(1160, 850)
         self.configure(fg_color=COLORS["bg"])
 
         self.state_model = DashboardState()
@@ -126,9 +163,17 @@ class FanDashboardApp(ctk.CTk):
             on_error=lambda exc: self.events.put(("error", exc)),
         )
 
+        self.settings_store = SettingsStore(default_settings_path())
+        self.settings = self.settings_store.load()
+
         self.metric_labels: dict[str, ctk.CTkLabel] = {}
         self.status_var = tk.StringVar(value="Disconnected")
         self.port_var = tk.StringVar()
+        self.port_detail_var = tk.StringVar(value="Scanning for devices…")
+        self.autoreconnect_var = tk.BooleanVar(value=self.settings.auto_reconnect)
+        self._port_choices: list[PortChoice] = []
+        self._choice_by_label: dict[str, PortChoice] = {}
+        self._pending_select_key: str | None = None
         self.speed_var = tk.StringVar(value="120")
         self.pid_gain_var = tk.StringVar(value="Kp")
         self.pid_value_var = tk.StringVar(value="35")
@@ -140,12 +185,15 @@ class FanDashboardApp(ctk.CTk):
         self._recorder: TelemetryRecorder | None = None
         self._rendered_log_count = 0
         self._sidebar_collapsed = False
+        self.mode = DEFAULT_MODE
+        self.mode_status_var = tk.StringVar(value=MODE_STATUS_LABELS[DEFAULT_MODE])
 
         self._build_layout()
         self.refresh_ports()
-        self._log("Dashboard ready. Connect to a serial port to begin.")
+        self._log("Dashboard ready. Pick your fan's device and connect.")
         self.after(POLL_MS, self._drain_events)
         self.after(FAN_ANIM_MS, self._animate_fan)
+        self.after(600, self._maybe_auto_reconnect)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------ layout
@@ -223,15 +271,20 @@ class FanDashboardApp(ctk.CTk):
         self.speed_ax, self.speed_canvas = self._chart(speed_card.body, "Speed vs target", "RPM", surface=COLORS["chart"])
         self.temp_ax, self.temp_canvas = self._chart(temp_card.body, "Temperature", "°C", surface=COLORS["chart"])
         # Persistent line artists: refreshes call set_data() instead of clearing
-        # and re-plotting the whole axes on every telemetry sample.
-        (self._speed_line,) = self.speed_ax.plot([], [], color=COLORS["accent"], linewidth=2.2, label="Speed")
-        (self._target_line,) = self.speed_ax.plot([], [], color=COLORS["warning"], linewidth=1.8, linestyle="--", label="Target")
+        # and re-plotting the whole axes on every telemetry sample. The soft area
+        # fills under each trace are re-drawn per refresh in _fill_under().
+        (self._speed_line,) = self.speed_ax.plot([], [], color=COLORS["accent"], linewidth=2.4, solid_capstyle="round", solid_joinstyle="round", label="Speed")
+        (self._target_line,) = self.speed_ax.plot([], [], color=COLORS["warning"], linewidth=1.6, linestyle=(0, (4, 3)), label="Target")
         self.speed_ax.legend(loc="lower right", frameon=False, fontsize=8, labelcolor=COLORS["muted"])
-        (self._temp_line,) = self.temp_ax.plot([], [], color=COLORS["error"], linewidth=2.0)
+        (self._temp_line,) = self.temp_ax.plot([], [], color=COLORS["error"], linewidth=2.4, solid_capstyle="round", solid_joinstyle="round")
+        self._speed_fill = None
+        self._temp_fill = None
 
     def _build_control_sidebar(self, parent) -> None:
-        # Expanded sidebar: a tabbed panel (Controls / Event log) on the right
-        # that can be collapsed to a slim rail to give the charts more room.
+        # Expanded sidebar (top → bottom): mode badge, the Auto / Manual / Event
+        # log tabview, the connection (Bluetooth) group, then a full-width
+        # collapse button. The Auto and Manual tabs are the two operating modes;
+        # switching tabs re-commands the firmware. Collapses to a slim rail.
         self.sidebar = Card(parent, fill=COLORS["surface"], radius=RADIUS["card"], inset=SPACE["md"])
         self.sidebar.grid(row=0, column=1, sticky="nsew")
         body = self.sidebar.body
@@ -241,7 +294,8 @@ class FanDashboardApp(ctk.CTk):
         header = ctk.CTkFrame(body, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["sm"]))
         header.grid_columnconfigure(0, weight=1)
-        self._sidebar_toggle_button(header, "❯").grid(row=0, column=1, sticky="e")
+        MicroLabel(header, "Mode").grid(row=0, column=0, sticky="w")
+        text_label(header, font="group", fg="accent_dark", textvariable=self.mode_status_var).grid(row=1, column=0, sticky="w")
 
         tabs = ctk.CTkTabview(
             body,
@@ -254,26 +308,62 @@ class FanDashboardApp(ctk.CTk):
             segmented_button_unselected_color=COLORS["surface_alt"],
             segmented_button_unselected_hover_color=COLORS["accent_soft"],
             text_color=COLORS["accent_dark"],
+            command=self._on_tab_change,
         )
         tabs.grid(row=1, column=0, sticky="nsew")
-        self._populate_controls_tab(tabs.add("Controls"))
-        self._populate_event_log_tab(tabs.add("Event log"))
+        self.mode_tabs = tabs
+        self._populate_auto_tab(tabs.add(dict(FAN_MODES)["auto"]))
+        self._populate_manual_tab(tabs.add(dict(FAN_MODES)["manual"]))
+        self._populate_event_log_tab(tabs.add(EVENT_LOG_TAB_LABEL))
+        tabs.set(dict(FAN_MODES)[DEFAULT_MODE])
 
-        # Collapsed rail: a slim card holding only the expand button.
+        connection = self._make_group(body, "connection")
+        connection.grid(row=2, column=0, sticky="ew", pady=(SPACE["sm"], SPACE["sm"]))
+
+        collapse = Button(body, text="Collapse  ❯", command=self._toggle_sidebar, variant="secondary")
+        collapse.grid(row=3, column=0, sticky="ew")
+
+        # Collapsed rail: icon-only mode switch on top, expand button pinned below.
         self.sidebar_rail = Card(parent, fill=COLORS["surface"], radius=RADIUS["pill"], inset=SPACE["xs"])
         rail_body = self.sidebar_rail.body
         rail_body.grid_columnconfigure(0, weight=1)
-        self._sidebar_toggle_button(rail_body, "❮").grid(row=0, column=0, sticky="ew")
+        rail_body.grid_rowconfigure(len(FAN_MODES), weight=1)  # spacer pushes expand to the bottom
+        self.rail_mode_buttons: dict[str, Button] = {}
+        for index, (mode_id, _label) in enumerate(FAN_MODES):
+            button = Button(rail_body, text=MODE_RAIL_GLYPHS[mode_id], command=lambda m=mode_id: self._set_mode(m), variant="secondary", width=36)
+            button.grid(row=index, column=0, sticky="ew", pady=(0, SPACE["xs"]))
+            self.rail_mode_buttons[mode_id] = button
+        self._sidebar_toggle_button(rail_body, "❮").grid(row=len(FAN_MODES) + 1, column=0, sticky="ew")
         self.sidebar_rail.grid(row=0, column=1, sticky="nsew")
         self.sidebar_rail.grid_remove()
+        self._refresh_rail_mode_buttons()
 
-    def _populate_controls_tab(self, tab) -> None:
+    def _make_group(self, parent, group_id: str) -> GroupCard:
+        title, actions = FOOTER_CONTROL_GROUP_MAP[group_id]
+        group = GroupCard(parent, title)
+        self._build_control_group(group_id, group, actions)
+        return group
+
+    def _populate_auto_tab(self, tab) -> None:
+        # Speed is owned by the firmware's temperature curve, and the live charts
+        # / metric tiles already live in the main panel — so this tab is just one
+        # big hero card: the current temperature on a gradient that shifts colour
+        # with the reading. The card flexes to fill whatever height is available.
         tab.grid_columnconfigure(0, weight=1)
-        for index, (group_id, title, actions) in enumerate(FOOTER_CONTROL_GROUPS):
-            group = GroupCard(tab, title)
-            group.grid(row=index, column=0, sticky="ew", pady=(SPACE["md"], 0))
-            self._build_control_group(group_id, group, actions)
-        tab.grid_rowconfigure(len(FOOTER_CONTROL_GROUPS), weight=1)  # keep groups top-aligned
+        tab.grid_rowconfigure(0, weight=1)
+        self.auto_card = TemperatureHighlightCard(tab, self.fonts["hero"])
+        self.auto_card.grid(row=0, column=0, sticky="nsew", pady=(SPACE["sm"], 0))
+
+        service = GroupCard(tab, "Service")
+        service.grid(row=1, column=0, sticky="ew", pady=(SPACE["md"], 0))
+        self._build_service_buttons(service)
+
+    def _populate_manual_tab(self, tab) -> None:
+        tab.grid_columnconfigure(0, weight=1)
+        for index, group_id in enumerate(("speed", "tuning")):
+            group = self._make_group(tab, group_id)
+            group.grid(row=index, column=0, sticky="ew", pady=(SPACE["sm"], 0))
+        tab.grid_rowconfigure(2, weight=1)  # keep groups top-aligned
 
     def _populate_event_log_tab(self, tab) -> None:
         tab.grid_columnconfigure(0, weight=1)
@@ -322,12 +412,36 @@ class FanDashboardApp(ctk.CTk):
         right_btn = dict(sticky="ew", padx=(gap, pad), pady=(0, pad))
         if group_id == "connection":
             refresh_action, connect_action = actions
-            MicroLabel(group, "Port").grid(**label_grid)
-            self.port_combo = Dropdown(group, self.port_var, [""])
-            self.port_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, SPACE["sm"]))
-            self._action_button(group, refresh_action, self.refresh_ports).grid(row=3, column=0, **left_btn)
+            MicroLabel(group, "Device").grid(**label_grid)
+            device_row = ctk.CTkFrame(group, fg_color="transparent")
+            device_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, gap))
+            device_row.grid_columnconfigure(0, weight=1)
+            self.port_combo = Dropdown(device_row, self.port_var, [self.NO_PORTS_LABEL], command=lambda _value=None: self._on_port_selected())
+            self.port_combo.grid(row=0, column=0, sticky="ew", padx=(0, gap))
+            self.rename_button = Button(device_row, text="✎", command=self._rename_selected_device, variant="secondary", width=42)
+            self.rename_button.grid(row=0, column=1, sticky="e")
+            text_label(group, font="small", fg="subtle", bg="surface_alt", textvariable=self.port_detail_var, wraplength=230, justify="left").grid(
+                row=3, column=0, columnspan=2, sticky="w", padx=pad, pady=(0, SPACE["sm"])
+            )
+            self._action_button(group, refresh_action, self.refresh_ports).grid(row=4, column=0, **left_btn)
             self.connect_button = self._action_button(group, connect_action, self.toggle_connection)
-            self.connect_button.grid(row=3, column=1, **right_btn)
+            self.connect_button.grid(row=4, column=1, **right_btn)
+            self.autoreconnect_check = ctk.CTkCheckBox(
+                group,
+                text="Reconnect on launch",
+                variable=self.autoreconnect_var,
+                command=self._toggle_auto_reconnect,
+                font=self.fonts["body"],
+                text_color=COLORS["muted"],
+                fg_color=COLORS["accent"],
+                hover_color=COLORS["accent_dark"],
+                checkmark_color="white",
+                border_color=COLORS["border"],
+                checkbox_width=18,
+                checkbox_height=18,
+                corner_radius=RADIUS["control"],
+            )
+            self.autoreconnect_check.grid(row=5, column=0, columnspan=2, sticky="w", padx=pad, pady=(0, pad))
             return
 
         if group_id == "speed":
@@ -348,6 +462,45 @@ class FanDashboardApp(ctk.CTk):
         self._action_button(group, pid_action, self.send_pid_command).grid(row=3, column=0, **left_btn)
         self._action_button(group, reset_action, lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(row=3, column=1, **right_btn)
         self._action_button(group, help_action, lambda: self.send_command(build_help_command(), "Help command sent")).grid(row=4, column=0, columnspan=2, sticky="ew", padx=pad, pady=(0, pad))
+
+    def _build_service_buttons(self, group) -> None:
+        # Reset / Help, shared by the Auto tab where there is no tuning group.
+        pad, gap = SPACE["md"], SPACE["xs"]
+        self._action_button(group, "reset", lambda: self.send_command(build_reset_faults_command(), "Reset command sent")).grid(
+            row=1, column=0, sticky="ew", padx=(pad, gap), pady=(0, pad)
+        )
+        self._action_button(group, "help", lambda: self.send_command(build_help_command(), "Help command sent")).grid(
+            row=1, column=1, sticky="ew", padx=(gap, pad), pady=(0, pad)
+        )
+
+    # --------------------------------------------------------------- mode switch
+    def _on_tab_change(self) -> None:
+        mode = MODE_TAB_LABELS.get(self.mode_tabs.get())
+        if mode is None:  # Event log tab — leave the active control mode alone
+            return
+        self._set_mode(mode)
+
+    def _set_mode(self, mode: str) -> None:
+        # Single entry point for a mode change from either surface (tab or rail):
+        # command the firmware, then keep the tabview and rail buttons in sync.
+        self._apply_mode(mode)
+        self.mode_tabs.set(dict(FAN_MODES)[mode])  # no-op if already selected; never re-fires the callback
+        self._refresh_rail_mode_buttons()
+
+    def _apply_mode(self, mode: str, *, announce: bool = True) -> None:
+        self.mode = mode
+        self.mode_status_var.set(MODE_STATUS_LABELS[mode])
+        label = dict(FAN_MODES)[mode]
+        if self.serial_client.is_connected:
+            self.send_command(MODE_COMMAND_BUILDERS[mode](), f"{label} mode enabled")
+        elif announce:
+            self._log(f"{label} mode selected — applies on connect.", "info")
+
+    def _refresh_rail_mode_buttons(self) -> None:
+        if not hasattr(self, "rail_mode_buttons"):
+            return
+        for mode_id, button in self.rail_mode_buttons.items():
+            button.set_variant("primary" if mode_id == self.mode else "secondary")
 
     def _ensure_fan_stage_labels(self) -> dict[str, MetricTile]:
         if hasattr(self, "fan_stage_labels"):
@@ -456,14 +609,17 @@ class FanDashboardApp(ctk.CTk):
         text_label(parent, title, font="section", bg=surface).pack(anchor="w")
         fig = Figure(figsize=(6, 2.1), dpi=100, facecolor=surface)
         ax = fig.add_subplot(111)
-        ax.set_facecolor(COLORS["chart"])
-        ax.tick_params(colors=COLORS["muted"], labelsize=9)
-        ax.set_xlabel("seconds", color=COLORS["muted"], fontsize=9)
-        ax.set_ylabel(ylabel, color=COLORS["muted"], fontsize=9)
-        ax.grid(True, color=COLORS["grid"], linewidth=0.8)
+        ax.set_facecolor(surface)
+        ax.margins(x=0.015, y=0.2)
+        # Spineless, ticks without marks, a faint dotted baseline grid: minimal
+        # chrome so the line itself is the focus.
+        ax.tick_params(colors=COLORS["subtle"], labelsize=8, length=0, pad=4)
+        ax.set_ylabel(ylabel, color=COLORS["subtle"], fontsize=8)
+        ax.grid(True, axis="y", color=COLORS["grid"], linewidth=1.0, linestyle=(0, (1, 3)))
+        ax.set_axisbelow(True)
         for spine in ax.spines.values():
-            spine.set_color(COLORS["border"])
-        fig.tight_layout(pad=1.5)
+            spine.set_visible(False)
+        fig.subplots_adjust(left=0.11, right=0.975, top=0.94, bottom=0.17)
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.get_tk_widget().pack(fill="both", expand=True, pady=(SPACE["sm"], 0))
         return ax, canvas
@@ -471,33 +627,107 @@ class FanDashboardApp(ctk.CTk):
     # ----------------------------------------------------------- serial / cmds
     def refresh_ports(self) -> None:
         try:
-            ports = SerialClient.list_ports()
+            infos = self.serial_client.list_port_infos()
         except Exception as exc:
-            self._log(f"Port scan failed: {exc}", "error")
-            ports = []
-        self.port_combo.configure(values=ports if ports else [""])
-        if ports and self.port_var.get() not in ports:
-            self.port_var.set(ports[0])
-        elif not ports:
-            self.port_var.set("")
-        self._log(f"Found {len(ports)} serial port(s).", "info")
+            self._log(f"Device scan failed: {exc}", "error")
+            infos = []
+        choices = build_port_choices(infos, last_key=self.settings.last_port_key, custom_names=self.settings.custom_names)
+        self._port_choices = choices
+        self._choice_by_label = {choice.name: choice for choice in choices}
+        self.port_combo.configure(values=[choice.name for choice in choices] if choices else [self.NO_PORTS_LABEL])
+        self.port_var.set(self._default_port_label(choices))
+        self._on_port_selected()
+        self._log(f"Found {len(choices)} device(s).", "info")
+
+    def _default_port_label(self, choices) -> str:
+        if not choices:
+            return self.NO_PORTS_LABEL
+        # A device just renamed jumps back to the top of the selection priority.
+        pending = getattr(self, "_pending_select_key", None)
+        self._pending_select_key = None
+        for key in (pending, self.settings.last_port_key):
+            if key is not None:
+                match = next((choice for choice in choices if choice.key == key), None)
+                if match is not None:
+                    return match.name
+        if self.port_var.get() in self._choice_by_label:
+            return self.port_var.get()
+        return choices[0].name
+
+    def _selected_choice(self):
+        return self._choice_by_label.get(self.port_var.get())
+
+    def _on_port_selected(self) -> None:
+        choice = self._selected_choice()
+        if choice is not None:
+            self.port_detail_var.set(choice.detail)
+        elif self._port_choices:
+            self.port_detail_var.set("Select a device to connect.")
+        else:
+            self.port_detail_var.set("No devices found. Pair your fan over Bluetooth, then Refresh.")
+        has_device = choice is not None
+        if hasattr(self, "rename_button"):
+            self.rename_button.configure(state="normal" if has_device else "disabled")
+        if hasattr(self, "connect_button") and not self.serial_client.is_connected:
+            self.connect_button.configure(state="normal" if has_device else "disabled")
+
+    def _rename_selected_device(self) -> None:
+        choice = self._selected_choice()
+        if choice is None:
+            return
+        dialog = ctk.CTkInputDialog(title="Rename device", text=f"Friendly name for:\n{choice.device}\n\n(leave blank to reset)")
+        response = dialog.get_input()  # blocks until the dialog closes; None on cancel
+        if response is None:
+            return
+        name = response.strip()
+        if name:
+            self.settings.custom_names[choice.key] = name
+            self._log(f"Renamed device to “{name}”.", "success")
+        else:
+            self.settings.custom_names.pop(choice.key, None)
+            self._log("Reset device to its default name.", "info")
+        self.settings_store.save(self.settings)
+        self._pending_select_key = choice.key
+        self.refresh_ports()
+
+    def _toggle_auto_reconnect(self) -> None:
+        self.settings.auto_reconnect = bool(self.autoreconnect_var.get())
+        self.settings_store.save(self.settings)
+        state = "on" if self.settings.auto_reconnect else "off"
+        self._log(f"Reconnect on launch turned {state}.", "info")
+
+    def _maybe_auto_reconnect(self) -> None:
+        if not self.settings.auto_reconnect or self.serial_client.is_connected:
+            return
+        choice = self._selected_choice()
+        if choice is not None and choice.is_last_used:
+            self._log(f"Auto-reconnecting to {choice.name}…", "info")
+            self.toggle_connection()
 
     def toggle_connection(self) -> None:
         if self.serial_client.is_connected:
             self.serial_client.disconnect()
             self._set_connected(False)
             return
-        port = self.port_var.get().strip()
-        if not port:
-            messagebox.showwarning("No serial port", "Select a serial port before connecting.")
+        choice = self._selected_choice()
+        if choice is None:
+            messagebox.showwarning("No device", "Select a Bluetooth or serial device before connecting.")
             return
         try:
-            self.serial_client.connect(port)
+            self.serial_client.connect(choice.device)
             self._set_connected(True)
+            self._apply_mode(self.mode, announce=False)
+            self.status_var.set(f"Connected · {choice.name}")
+            self._remember_device(choice)
         except Exception as exc:
             self._set_connected(False)
-            self._log(f"Connection failed: {exc}", "error")
+            self._log(f"Connection to {choice.name} failed: {exc}", "error")
             messagebox.showerror("Connection failed", str(exc))
+
+    def _remember_device(self, choice) -> None:
+        if self.settings.last_port_key != choice.key:
+            self.settings.last_port_key = choice.key
+            self.settings_store.save(self.settings)
 
     def send_speed_command(self) -> None:
         try:
@@ -623,8 +853,27 @@ class FanDashboardApp(ctk.CTk):
             self.fan_stage_metric_labels["fault"].configure(text_color=fault_color)
         self.status_var.set(self.state_model.connection_label)
         self.connection_dot.set(True)
+        self._refresh_auto_card()
         self._refresh_charts()
         self._sync_logs()
+
+    def _refresh_auto_card(self) -> None:
+        if not hasattr(self, "auto_card"):
+            return
+        latest = self.state_model.latest
+        if latest is not None and temperature_is_valid(latest.temperature_c):
+            self.auto_card.set_temperature(latest.temperature_c, self._auto_status_text(latest.temperature_c), valid=True)
+        else:
+            self.auto_card.set_temperature(None, "No temperature reading", valid=False)
+
+    @staticmethod
+    def _auto_status_text(temp_c: float) -> str:
+        # Auto-mode-specific read of the firmware curve — not a duplicate metric.
+        if temp_c <= AUTO_TEMP_START_C:
+            return f"Idle · below {AUTO_TEMP_START_C:g}°C threshold"
+        if temp_c >= AUTO_TEMP_FULL_C:
+            return "Full power"
+        return f"Ramping · {temperature_to_duty_percent(temp_c):.0f}% power"
 
     def _refresh_charts(self) -> None:
         speed_points = self.state_model.speed_points
@@ -632,18 +881,31 @@ class FanDashboardApp(ctk.CTk):
         if speed_points:
             base = speed_points[0][0]
             xs = [(point[0] - base) / 1000 for point in speed_points]
-            self._speed_line.set_data(xs, [point[1] for point in speed_points])
+            speed_ys = [point[1] for point in speed_points]
+            self._speed_line.set_data(xs, speed_ys)
             self._target_line.set_data(xs, [point[2] for point in speed_points])
             self.speed_ax.relim()
             self.speed_ax.autoscale_view()
+            self._speed_fill = self._fill_under(self.speed_ax, self._speed_fill, xs, speed_ys, COLORS["accent"])
         if temp_points:
             base = temp_points[0][0]
             xs = [(point[0] - base) / 1000 for point in temp_points]
-            self._temp_line.set_data(xs, [point[1] for point in temp_points])
+            temp_ys = [point[1] for point in temp_points]
+            self._temp_line.set_data(xs, temp_ys)
             self.temp_ax.relim()
             self.temp_ax.autoscale_view()
+            self._temp_fill = self._fill_under(self.temp_ax, self._temp_fill, xs, temp_ys, COLORS["error"])
         self.speed_canvas.draw_idle()
         self.temp_canvas.draw_idle()
+
+    @staticmethod
+    def _fill_under(ax, previous, xs, ys, color):
+        # Soft gradient-like wash under a trace. The previous PolyCollection is
+        # removed first so fills don't stack as telemetry streams in.
+        if previous is not None:
+            previous.remove()
+        baseline = ax.get_ylim()[0]
+        return ax.fill_between(xs, ys, baseline, color=color, alpha=0.10, linewidth=0)
 
     # ----------------------------------------------------------------- logging
     def _log(self, message: str, level: str = "info") -> None:
