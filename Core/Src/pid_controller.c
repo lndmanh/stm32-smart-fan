@@ -35,13 +35,23 @@ static float abs_float(float value) {
 void PID_Control_Update(void) {
     data_time_ms += 10U;
 
+    static uint8_t first_run = 1U;
     int32_t current_cnt = (int32_t)TIM2->CNT;
+
+    if (first_run != 0U) {
+        last_encoder_cnt = current_cnt;   // chu kỳ đầu chỉ lấy mốc đếm
+        first_run = 0U;
+        return;                           // chưa tính tốc độ vội
+    }
+
     int32_t delta_cnt = current_cnt - last_encoder_cnt;
     last_encoder_cnt = current_cnt;
 
-    current_speed = ((float)delta_cnt * 60.0f) / (PPR * TS_SEC);
+    // 1. Tính tốc độ thô (bị nhảy bậc thang) vào biến cục bộ raw_speed
+    float raw_speed = ((float)delta_cnt * 60.0f) / (PPR * TS_SEC);
 
-    if (abs_float(current_speed) > 190.0f) {
+    // 2. Dùng tốc độ thô để check lỗi an toàn
+    if (abs_float(raw_speed) > 300.0f) {
         fault_code = 1U;
     }
 
@@ -52,6 +62,11 @@ void PID_Control_Update(void) {
         return;
     }
 
+    // 3. 🔥 THÊM BỘ LỌC THÔNG THẤP TẠI ĐÂY
+    // Làm mịn tốc độ thô trước khi đưa vào tính PID và hiển thị lên App
+    current_speed = (0.15f * raw_speed) + (0.85f * current_speed);
+
+    // 4. Tính toán PID dựa trên tốc độ đã làm mịn
     float error = setpoint - current_speed;
     float p_term = pid_kp * error;
     i_term += pid_ki * error * TS_SEC;
@@ -82,7 +97,6 @@ void PID_Control_Update(void) {
     Set_Motor_Output(pwm_duty);
     last_speed = current_speed;
 }
-
 void PID_SetTargetRPM(float rpm) {
     if (rpm < 0.0f) {
         rpm = 0.0f;
@@ -111,7 +125,6 @@ void PID_ResetFaults(void) {
     last_speed = current_speed;
     stall_ticks = 0U;
 }
-
 const char *PID_GetStateName(void) {
     if (fault_code != 0U) {
         return "FAULT";
