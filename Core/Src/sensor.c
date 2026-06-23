@@ -2,18 +2,11 @@
  * sensor.c
  *
  * Temperature acquisition and filtering module.
- *
- * Functions called by main.c:
- *   - Sensor_Init()
- *   - Sensor_ReadTemperature()
- *
- * Features:
- *   - DS18B20 temperature reading
- *   - Moving Average Filter
- *
  ******************************************************************************/
 #include "sensor.h"
 #include "main.h"
+
+// Đã chuyển sang chân PB0
 #define DS18B20_PORT GPIOB
 #define DS18B20_PIN  GPIO_PIN_0
 
@@ -29,41 +22,26 @@ static void delay_us(uint32_t us)
 {
     uint32_t start = DWT->CYCCNT;
     uint32_t ticks = us * (HAL_RCC_GetHCLKFreq() / 1000000);
-
     while ((DWT->CYCCNT - start) < ticks);
 }
 
-/* Initialize DWT timer for microsecond delay */
+/* Initialize DWT timer and Configure PB0 as Open-Drain ONCE */
 void Sensor_Init(void)
 {
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
 
-/* Configure DS18B20 data pin as output open-drain */
-static void DS18B20_PinOutput(void)
-{
+    // Cấu hình chân MỘT LẦN DUY NHẤT ở chế độ Open-Drain
     GPIO_InitTypeDef GPIO_InitStruct = {0};
-
     GPIO_InitStruct.Pin = DS18B20_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(DS18B20_PORT, &GPIO_InitStruct);
-}
 
-/* Configure DS18B20 data pin as input */
-static void DS18B20_PinInput(void)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    GPIO_InitStruct.Pin = DS18B20_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-
-    HAL_GPIO_Init(DS18B20_PORT, &GPIO_InitStruct);
+    // Nhả chân lên mức HIGH
+    HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_SET);
 }
 
 /* Send reset pulse and check presence pulse */
@@ -71,12 +49,10 @@ static uint8_t DS18B20_Reset(void)
 {
     uint8_t presence = 0;
 
-    DS18B20_PinOutput();
-
     HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_RESET);
     delay_us(480);
 
-    DS18B20_PinInput();
+    HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_SET);
     delay_us(80);
 
     if (HAL_GPIO_ReadPin(DS18B20_PORT, DS18B20_PIN) == GPIO_PIN_RESET)
@@ -85,29 +61,28 @@ static uint8_t DS18B20_Reset(void)
     }
 
     delay_us(400);
-
     return presence;
 }
 
 /* Write one bit to DS18B20 */
 static void DS18B20_WriteBit(uint8_t bit)
 {
-    DS18B20_PinOutput();
-
+    __disable_irq(); // Khóa ngắt
     HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_RESET);
 
     if (bit)
     {
         delay_us(2);
-        DS18B20_PinInput();
+        HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_SET);
         delay_us(60);
     }
     else
     {
         delay_us(60);
-        DS18B20_PinInput();
+        HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_SET);
         delay_us(2);
     }
+    __enable_irq(); // Mở ngắt
 }
 
 /* Read one bit from DS18B20 */
@@ -115,21 +90,20 @@ static uint8_t DS18B20_ReadBit(void)
 {
     uint8_t bit = 0;
 
-    DS18B20_PinOutput();
-
+    __disable_irq(); // Khóa ngắt
     HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_RESET);
     delay_us(2);
 
-    DS18B20_PinInput();
+    HAL_GPIO_WritePin(DS18B20_PORT, DS18B20_PIN, GPIO_PIN_SET);
     delay_us(10);
 
     if (HAL_GPIO_ReadPin(DS18B20_PORT, DS18B20_PIN) == GPIO_PIN_SET)
     {
         bit = 1;
     }
+    __enable_irq(); // Mở ngắt
 
     delay_us(50);
-
     return bit;
 }
 
@@ -157,7 +131,6 @@ static uint8_t DS18B20_ReadByte(void)
             data |= 0x80;
         }
     }
-
     return data;
 }
 
@@ -191,7 +164,6 @@ static float DS18B20_ReadRawTemperature(void)
     temp_msb = DS18B20_ReadByte();
 
     raw_temp = (int16_t)((temp_msb << 8) | temp_lsb);
-
     temperature = raw_temp / 16.0f;
 
     return temperature;

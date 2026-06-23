@@ -23,7 +23,27 @@ void System_Init(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
     RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
-    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN | RCC_APB1ENR_TIM3EN | RCC_APB1ENR_USART2EN;
+
+    // Tắt USART2 ở APB1, bật clock cho USART1 ở APB2
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN | RCC_APB1ENR_TIM3EN;
+    RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
+
+    // ========================================================
+    // 🔥 CẤU HÌNH ĐÁNH THỨC MẠCH CẦU H TB6612 (PB10)
+    // ========================================================
+    GPIOB->MODER &= ~(3U << (10U * 2U)); // Xóa cấu hình cũ của chân PB10
+    GPIOB->MODER |=  (1U << (10U * 2U)); // Cấu hình PB10 làm chân OUTPUT (Ngõ ra)
+    GPIOB->ODR   |=  (1U << 10);         // Kéo chân PB10 lên mức HIGH để bật STBY
+
+    // ========================================================
+    // 🔥 CẤU HÌNH CHÂN PB6 (TX) VÀ PB7 (RX) CHO USART1
+    // ========================================================
+    GPIOB->MODER &= ~((3U << (6U * 2U)) | (3U << (7U * 2U))); // Xóa cấu hình GPIO cũ PB6, PB7
+    GPIOB->MODER |=  ((2U << (6U * 2U)) | (2U << (7U * 2U))); // Đặt thành Alternate Function (AF)
+
+    GPIOB->AFR[0] &= ~((15U << (6U * 4U)) | (15U << (7U * 4U))); // Xóa cấu hình AF cũ
+    GPIOB->AFR[0] |=  ((7U << (6U * 4U))  | (7U << (7U * 4U)));  // Đặt Alternate Function 7 (AF7) cho USART1
+    // ========================================================
 
     GPIOA->MODER &= ~(
         (3U << (0U * 2U)) |
@@ -71,27 +91,28 @@ void System_Init(void) {
 }
 
 void UART2_Init(void) {
-    USART2->CR1 = 0U;
-    USART2->CR2 = 0U;
-    USART2->CR3 = 0U;
-    USART2->BRR = (SYS_CLOCK + (UART_BAUD_RATE / 2U)) / UART_BAUD_RATE;
-    USART2->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+    // Chuyển toàn bộ thao tác thanh ghi sang USART1
+    USART1->CR1 = 0U;
+    USART1->CR2 = 0U;
+    USART1->CR3 = 0U;
+    USART1->BRR = (SYS_CLOCK + (UART_BAUD_RATE / 2U)) / UART_BAUD_RATE;
+    USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
 }
 
 int UART2_ReadChar(char *ch) {
-    if ((USART2->SR & USART_SR_RXNE) == 0U) {
+    if ((USART1->SR & USART_SR_RXNE) == 0U) {
         return 0;
     }
 
-    *ch = (char)(USART2->DR & 0xFFU);
+    *ch = (char)(USART1->DR & 0xFFU);
     return 1;
 }
 
 void UART2_WriteChar(char ch) {
-    while ((USART2->SR & USART_SR_TXE) == 0U) {
+    while ((USART1->SR & USART_SR_TXE) == 0U) {
     }
 
-    USART2->DR = (uint32_t)(uint8_t)ch;
+    USART1->DR = (uint32_t)(uint8_t)ch;
 }
 
 void UART2_WriteString(const char *text) {

@@ -201,6 +201,14 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+// Gọi biến toàn cục current_speed từ file main.c sang để cập nhật số liệu
+
+
+/* USER CODE BEGIN 1 */
+
+// 🔥 BẮT BUỘC: Khai báo extern để liên kết với biến current_speed bên main.c
+extern volatile float current_speed;
+
 void TIM3_IRQHandler(void)
 {
   if ((TIM3->SR & TIM_SR_UIF) == 0U)
@@ -208,8 +216,25 @@ void TIM3_IRQHandler(void)
     return;
   }
 
+  // Xóa cờ ngắt để tránh treo chip
   TIM3->SR &= ~TIM_SR_UIF;
-  PID_Control_Update();
+
+  // Cấu hình số xung encoder thực tế của bạn (Ví dụ: 1320.0f)
+  #define ENCODER_PULSES_PER_REV  1320.0f
+
+  // Đọc số xung đếm được từ Timer 2 (Encoder) trong 10ms qua
+  int16_t encoder_count = (int16_t)TIM2->CNT;
+
+  // Reset bộ đếm Timer 2 về 0 để chuẩn bị cho chu kỳ 10ms kế tiếp
+  TIM2->CNT = 0;
+
+  // Tính tốc độ vòng/phút (RPM) từ số xung
+  current_speed = ((float)encoder_count * 6000.0f) / ENCODER_PULSES_PER_REV;
+
+  // Tạm thời tắt hàm PID cũ để không tranh chấp với main.c
+  // PID_Control_Update();
 }
+
+/* USER CODE END 1 */
 
 /* USER CODE END 1 */

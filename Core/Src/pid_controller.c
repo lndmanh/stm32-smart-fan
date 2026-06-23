@@ -7,12 +7,12 @@
 #define PWM_ARR          ((SYS_CLOCK / PWM_FREQ) - 1U)
 
 #define TS_SEC           0.01f
-#define PPR              2800.0f
+#define PPR              1320.0f
 
 #define PID_SETPOINT_RPM 50.0f
-#define PID_KP           8.0f
-#define PID_KI           30.0f
-#define PID_KD           0.5f
+#define PID_KP           4.0f
+#define PID_KI           2.0f
+#define PID_KD           0.0f
 
 /* Stall protection — relaxed vs original (800 PWM / 200ms) for motor spin-up */
 #define STALL_PWM_THRESHOLD    1000
