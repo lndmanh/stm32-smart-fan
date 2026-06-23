@@ -46,6 +46,16 @@ def build_pid_command(gain: str, value: float) -> str:
     return f"{prefix}{_format_number(value)}\n"
 
 
+def build_auto_mode_command() -> str:
+    """Hand speed control to the firmware's temperature curve."""
+    return "a\n"
+
+
+def build_manual_mode_command() -> str:
+    """Take manual control of target RPM / tuning."""
+    return "m\n"
+
+
 def build_stop_command() -> str:
     return "x\n"
 

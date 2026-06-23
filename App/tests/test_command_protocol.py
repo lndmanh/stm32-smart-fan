@@ -2,7 +2,9 @@ import unittest
 
 from command_protocol import (
     COMMAND_HELP_LINES,
+    build_auto_mode_command,
     build_help_command,
+    build_manual_mode_command,
     build_pid_command,
     build_reset_faults_command,
     build_set_speed_command,
@@ -31,6 +33,10 @@ class CommandProtocolTests(unittest.TestCase):
         self.assertEqual(build_stop_command(), "x\n")
         self.assertEqual(build_reset_faults_command(), "r\n")
         self.assertEqual(build_help_command(), "?\n")
+
+    def test_mode_commands_match_firmware_letters(self):
+        self.assertEqual(build_auto_mode_command(), "a\n")
+        self.assertEqual(build_manual_mode_command(), "m\n")
 
     def test_help_documents_fix_commands(self):
         joined = "\n".join(COMMAND_HELP_LINES)
