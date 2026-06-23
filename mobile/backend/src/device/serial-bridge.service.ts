@@ -118,24 +118,43 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.sendRaw(buildManualModeCommand());
-    if (fanSpeed != null) {
-      this.sendRaw(buildSetSpeedCommand(percentToRpm(fanSpeed)));
+    const percent =
+      fanSpeed != null && fanSpeed > 0
+        ? fanSpeed
+        : this.latest
+          ? rpmToPercent(this.latest.targetRpm)
+          : fanSpeed;
+    if (percent != null && percent > 0) {
+      this.sendRaw(buildSetSpeedCommand(percentToRpm(percent)));
     }
   }
 
   private async resolvePortPath(): Promise<string | null> {
+    const ports = await this.listPorts();
     const configured = this.config.get<string>('SERIAL_PORT', '').trim();
+
     if (configured) {
-      return configured;
+      if (ports.includes(configured)) {
+        return configured;
+      }
+
+      const available =
+        ports.length > 0 ? ports.join(', ') : 'none (plug in STM32 USB-UART)';
+      this.logger.warn(
+        `SERIAL_PORT=${configured} not found — available: ${available}`,
+      );
     }
 
-    const ports = await this.listPorts();
     if (ports.length === 0) {
       return null;
     }
 
     const autoPort = ports[0];
-    this.logger.log(`SERIAL_PORT not set — auto-selected ${autoPort}`);
+    this.logger.log(
+      configured
+        ? `Falling back to auto-selected ${autoPort}`
+        : `SERIAL_PORT not set — auto-selected ${autoPort}`,
+    );
     return autoPort;
   }
 
@@ -205,7 +224,13 @@ export class SerialBridgeService implements OnModuleInit, OnModuleDestroy {
 
     this.latest = sample;
     const settings = await this.settingsService.getOrCreateSettings();
-    const fanSpeed = rpmToPercent(sample.rpm);
+    const status = await this.statusService.getStatus();
+    // Manual mode: show target setpoint (what the user asked for), not measured RPM
+    // which can be 0 while the motor is still spinning up.
+    const fanSpeed =
+      status.controlMode === 'manual'
+        ? rpmToPercent(sample.targetRpm)
+        : rpmToPercent(sample.rpm);
     const pwm = pwmToPercent(sample.pwm);
 
     let warning = 'Không có';

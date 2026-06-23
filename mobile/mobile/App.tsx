@@ -47,6 +47,7 @@ export default function App() {
           onOpenSettings={() => setScreen('settings')}
           onOpenFanControl={() => setScreen('fan')}
           onSetControlMode={monitor.setControlMode}
+          onResetFault={monitor.resetFault}
         />
       ) : null}
       {screen === 'fan' ? (
@@ -54,6 +55,8 @@ export default function App() {
           status={monitor.status}
           fanPoints={monitor.fanSpeedPoints}
           modePending={monitor.modePending}
+          fanMinSpeed={monitor.fanMinSpeed}
+          fanMaxSpeed={monitor.fanMaxSpeed}
           onBack={() => setScreen('home')}
           onSetControlMode={monitor.setControlMode}
           onSetFanSpeed={monitor.setFanSpeed}

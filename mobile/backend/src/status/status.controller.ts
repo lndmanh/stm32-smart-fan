@@ -1,5 +1,11 @@
-import { Body, Controller, Get, Put } from '@nestjs/common';
+import { Body, Controller, Get, Post, Put } from '@nestjs/common';
+import {
+  clampFanPercent,
+  pwmToPercent,
+  rpmToPercent,
+} from '../device/fan-protocol';
 import { SerialBridgeService } from '../device/serial-bridge.service';
+import { SettingsService } from '../settings/settings.service';
 import { SetControlModeDto } from './dto/set-control-mode.dto';
 import { SetFanSpeedDto } from './dto/set-fan-speed.dto';
 import { StatusService } from './status.service';
@@ -20,6 +26,7 @@ export class StatusController {
   constructor(
     private readonly statusService: StatusService,
     private readonly serialBridge: SerialBridgeService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   @Get()
@@ -37,8 +44,15 @@ export class StatusController {
       };
     }
 
+    const fanSpeed =
+      status.controlMode === 'manual'
+        ? rpmToPercent(sample.targetRpm)
+        : rpmToPercent(sample.rpm);
+
     return {
       ...status,
+      fanSpeed,
+      pwm: pwmToPercent(sample.pwm),
       dataSource: 'serial' as const,
       deviceConnected,
       rpm: sample.rpm,
@@ -57,17 +71,39 @@ export class StatusController {
     };
   }
 
+  @Post('reset-fault')
+  async resetFault() {
+    this.serialBridge.resetFaults();
+    return this.getStatus();
+  }
+
   @Put('fan')
   async setFanSpeed(@Body() dto: SetFanSpeedDto) {
-    const status = await this.statusService.setFanSpeed(dto.fanSpeed);
-    this.serialBridge.setTargetPercent(dto.fanSpeed);
+    const settings = await this.settingsService.getOrCreateSettings();
+    const fanSpeed = clampFanPercent(
+      dto.fanSpeed,
+      settings.fanMinSpeed,
+      settings.fanMaxSpeed,
+    );
+    this.serialBridge.resetFaults();
+    const status = await this.statusService.setFanSpeed(fanSpeed);
+    this.serialBridge.setTargetPercent(fanSpeed);
     return status;
   }
 
   @Put('mode')
   async setControlMode(@Body() dto: SetControlModeDto) {
+    const settings = await this.settingsService.getOrCreateSettings();
     const status = await this.statusService.setControlMode(dto.mode);
-    this.serialBridge.setControlMode(dto.mode, status.fanSpeed);
+    const fanSpeed = clampFanPercent(
+      status.fanSpeed,
+      settings.fanMinSpeed,
+      settings.fanMaxSpeed,
+    );
+    this.serialBridge.setControlMode(dto.mode, fanSpeed);
+    if (fanSpeed !== status.fanSpeed) {
+      return this.statusService.setFanSpeed(fanSpeed);
+    }
     return status;
   }
 }

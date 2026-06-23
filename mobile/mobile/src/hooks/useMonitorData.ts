@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, getApiBaseUrl } from '../api/client';
 import type { MonitorStatus, PidSettings } from '../types/api';
+import { clampFanPercent } from '../utils/fanSpeed';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -12,9 +13,12 @@ type MonitorData = {
   loading: boolean;
   error: string | null;
   modePending: boolean;
+  fanMinSpeed: number;
+  fanMaxSpeed: number;
   refresh: () => Promise<void>;
   setControlMode: (mode: 'auto' | 'manual') => Promise<void>;
   setFanSpeed: (fanSpeed: number) => Promise<void>;
+  resetFault: () => Promise<void>;
 };
 
 export function useMonitorData(): MonitorData {
@@ -25,20 +29,25 @@ export function useMonitorData(): MonitorData {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modePending, setModePending] = useState(false);
+  const [fanMinSpeed, setFanMinSpeed] = useState(0);
+  const [fanMaxSpeed, setFanMaxSpeed] = useState(100);
 
   const refresh = useCallback(async () => {
     try {
-      const [nextStatus, tempHistory, fanHistory, pwmHistory] =
+      const [nextStatus, tempHistory, fanHistory, pwmHistory, pidSettings] =
         await Promise.all([
           api.getStatus(),
           api.getTemperatureHistory(20),
           api.getFanSpeedHistory(20),
           api.getPwmHistory(20),
+          api.getPidSettings(),
         ]);
       setStatus(nextStatus);
       setTemperaturePoints(tempHistory.points);
       setFanSpeedPoints(fanHistory.points);
       setPwmPoints(pwmHistory.points);
+      setFanMinSpeed(pidSettings.fanMinSpeed);
+      setFanMaxSpeed(pidSettings.fanMaxSpeed);
       setError(null);
     } catch (err) {
       const message =
@@ -77,7 +86,7 @@ export function useMonitorData(): MonitorData {
   }, [modePending, status]);
 
   const setFanSpeed = useCallback(async (fanSpeed: number) => {
-    const clamped = Math.min(100, Math.max(0, Math.round(fanSpeed)));
+    const clamped = clampFanPercent(fanSpeed, fanMinSpeed, fanMaxSpeed);
     const previous = status;
 
     setStatus((current) =>
@@ -98,7 +107,21 @@ export function useMonitorData(): MonitorData {
         err instanceof Error ? err.message : 'Không thể đặt tốc độ quạt';
       setError(`${message}\n→ ${getApiBaseUrl()}`);
     }
-  }, [status]);
+  }, [status, fanMinSpeed, fanMaxSpeed]);
+
+  const resetFault = useCallback(async () => {
+    try {
+      const updated = await api.resetFault();
+      setStatus((current) =>
+        current ? { ...current, ...updated } : updated,
+      );
+      setError(null);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Không thể reset lỗi';
+      setError(`${message}\n→ ${getApiBaseUrl()}`);
+    }
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -114,9 +137,12 @@ export function useMonitorData(): MonitorData {
     loading,
     error,
     modePending,
+    fanMinSpeed,
+    fanMaxSpeed,
     refresh,
     setControlMode,
     setFanSpeed,
+    resetFault,
   };
 }
 

@@ -37,6 +37,7 @@ type HomeScreenProps = {
   onOpenSettings: () => void;
   onOpenFanControl: () => void;
   onSetControlMode: (mode: 'auto' | 'manual') => Promise<void>;
+  onResetFault: () => Promise<void>;
 };
 
 export default function HomeScreen({
@@ -50,6 +51,7 @@ export default function HomeScreen({
   onOpenSettings,
   onOpenFanControl,
   onSetControlMode,
+  onResetFault,
 }: HomeScreenProps) {
   if (loading && !status) {
     return (
@@ -74,6 +76,7 @@ export default function HomeScreen({
     state: null,
   };
   const hasWarning = data.warning !== 'Không có';
+  const hasFault = (data.faultCode ?? 0) !== 0;
   const fanModeLabel =
     data.controlMode === 'auto' ? 'Tự động theo nhiệt độ' : 'Điều khiển thủ công';
   const sourceLabel = data.deviceConnected
@@ -217,6 +220,23 @@ export default function HomeScreen({
           }
         />
 
+        {hasFault ? (
+          <TouchableOpacity
+            style={styles.faultButton}
+            onPress={() => void onResetFault()}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="restart"
+              size={22}
+              color="#fff"
+            />
+            <Text style={styles.faultButtonText}>
+              Reset lỗi motor (Fault {data.faultCode})
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+
         <MonitorCard
           icon={
             <MaterialCommunityIcons name="cog" size={32} color={colors.blue} />
@@ -299,5 +319,21 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 32,
+  },
+  faultButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.red,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginTop: 4,
+  },
+  faultButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

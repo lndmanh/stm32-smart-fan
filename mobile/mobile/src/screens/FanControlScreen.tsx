@@ -16,6 +16,7 @@ import LineChart from '../components/LineChart';
 import ModeToggle from '../components/ModeToggle';
 import { colors } from '../constants/theme';
 import type { MonitorStatus } from '../types/api';
+import { buildFanPresets, clampFanPercent } from '../utils/fanSpeed';
 
 if (
   Platform.OS === 'android' &&
@@ -28,6 +29,8 @@ type FanControlScreenProps = {
   status: MonitorStatus | null;
   fanPoints: number[];
   modePending: boolean;
+  fanMinSpeed: number;
+  fanMaxSpeed: number;
   onBack: () => void;
   onSetControlMode: (mode: 'auto' | 'manual') => Promise<void>;
   onSetFanSpeed: (fanSpeed: number) => Promise<void>;
@@ -37,6 +40,8 @@ export default function FanControlScreen({
   status,
   fanPoints,
   modePending,
+  fanMinSpeed,
+  fanMaxSpeed,
   onBack,
   onSetControlMode,
   onSetFanSpeed,
@@ -58,10 +63,12 @@ export default function FanControlScreen({
   };
 
   const applyFanSpeed = (next: number) => {
-    const clamped = Math.min(100, Math.max(0, next));
+    const clamped = clampFanPercent(next, fanMinSpeed, fanMaxSpeed);
     setLocalFanSpeed(clamped);
     void onSetFanSpeed(clamped);
   };
+
+  const presets = buildFanPresets(fanMinSpeed, fanMaxSpeed);
 
   return (
     <View style={styles.container}>
@@ -106,6 +113,9 @@ export default function FanControlScreen({
         {mode === 'manual' ? (
           <View style={styles.controlCard}>
             <Text style={styles.sectionTitle}>Chỉnh tốc độ quạt</Text>
+            <Text style={styles.limitHint}>
+              Giới hạn: {fanMinSpeed}% – {fanMaxSpeed}%
+            </Text>
             <View style={styles.stepRow}>
               <StepButton label="-10" onPress={() => applyFanSpeed(localFanSpeed - 10)} />
               <StepButton label="-5" onPress={() => applyFanSpeed(localFanSpeed - 5)} />
@@ -114,7 +124,7 @@ export default function FanControlScreen({
               <StepButton label="+10" onPress={() => applyFanSpeed(localFanSpeed + 10)} />
             </View>
             <View style={styles.presetRow}>
-              {[0, 30, 50, 70, 100].map((preset) => (
+              {presets.map((preset) => (
                 <TouchableOpacity
                   key={preset}
                   style={[
@@ -219,6 +229,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.text,
     marginBottom: 12,
+  },
+  limitHint: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 10,
+    marginTop: -6,
   },
   stepRow: {
     flexDirection: 'row',

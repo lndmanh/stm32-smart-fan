@@ -40,6 +40,16 @@ export function rpmToPercent(rpm: number): number {
   return Math.round(Math.max(0, Math.min(100, (rpm / MAX_RPM) * 100)));
 }
 
+export function clampFanPercent(
+  percent: number,
+  min = 0,
+  max = 100,
+): number {
+  const lo = Math.max(0, Math.min(100, Math.round(min)));
+  const hi = Math.max(lo, Math.min(100, Math.round(max)));
+  return Math.round(Math.max(lo, Math.min(hi, percent)));
+}
+
 export function percentToRpm(percent: number): number {
   return Math.round(Math.max(0, Math.min(MAX_RPM, (percent / 100) * MAX_RPM)));
 }

@@ -70,6 +70,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ mode }),
     }),
+  resetFault: () =>
+    request<MonitorStatus>('/api/status/reset-fault', { method: 'POST' }),
   getPidSettings: () => request<PidSettings>('/api/settings/pid'),
   updatePidSettings: (settings: PidSettings) =>
     request<PidSettings>('/api/settings/pid', {
