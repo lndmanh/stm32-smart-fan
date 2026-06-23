@@ -8,11 +8,23 @@ styling. Fonts are read from :data:`theme.FONTS` at construction time, so
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 
 import customtkinter as ctk
 
-from theme import BUTTON_VARIANTS, COLORS, FONTS, RADIUS, SPACE
+from theme import (
+    BUTTON_VARIANTS,
+    COLORS,
+    FONTS,
+    RADIUS,
+    SPACE,
+    _hex_to_rgb,
+    _rgb_to_hex,
+    darken,
+    lighten,
+    temperature_to_color,
+)
 
 
 def _color(value: str) -> str:
@@ -52,6 +64,7 @@ class Button(ctk.CTkButton):
         fg, text_color, hover = BUTTON_VARIANTS[variant]
         kw.setdefault("corner_radius", RADIUS["control"])
         kw.setdefault("font", FONTS["button"])
+        kw.setdefault("height", 34)
         super().__init__(parent, text=text, command=command, fg_color=fg, hover_color=hover, text_color=text_color, **kw)
 
     def set_variant(self, variant: str) -> None:
@@ -125,9 +138,64 @@ class MetricTile(ctk.CTkFrame):
 
     def __init__(self, parent, title: str, value_font, *, value: str = "--"):
         super().__init__(parent, corner_radius=RADIUS["tile"], fg_color=COLORS["surface_alt"], border_width=1, border_color=COLORS["border"])
-        MicroLabel(self, title).pack(anchor="w", padx=SPACE["md"], pady=(SPACE["sm"], 0))
+        MicroLabel(self, title).pack(anchor="w", padx=SPACE["md"], pady=(SPACE["sm"] + 2, 0))
         self.value = ctk.CTkLabel(self, text=value, fg_color="transparent", text_color=COLORS["text"], font=value_font, anchor="w")
-        self.value.pack(anchor="w", padx=SPACE["md"], pady=(2, SPACE["sm"]))
+        self.value.pack(anchor="w", padx=SPACE["md"], pady=(3, SPACE["sm"] + 2))
+
+
+class TemperatureHighlightCard(tk.Canvas):
+    """Auto-mode hero: the live temperature on a heat-mapped gradient.
+
+    The whole card is painted as a vertical gradient whose colour tracks the
+    temperature (cool blue → hot red), so the reading reads at a glance without
+    duplicating the metric tiles or time-series charts elsewhere on the
+    dashboard. :meth:`set_temperature` repaints with the new value and status.
+    """
+
+    def __init__(self, parent, value_font, *, radius: int = RADIUS["panel"], height: int = 240, surface: str = COLORS["surface"]):
+        super().__init__(parent, height=height, bg=surface, highlightthickness=0, bd=0)
+        self._value_font = value_font
+        self._radius = radius
+        self._temp: float | None = None
+        self._valid = False
+        self._status = "Waiting for telemetry"
+        self.bind("<Configure>", lambda _event: self._redraw())
+
+    def set_temperature(self, temp_c: float | None, status: str, *, valid: bool = True) -> None:
+        self._temp = temp_c
+        self._status = status
+        self._valid = valid and temp_c is not None
+        self._redraw()
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        width, height = self.winfo_width(), self.winfo_height()
+        if width < 80 or height < 80:
+            return
+        base = temperature_to_color(self._temp) if (self._valid and self._temp is not None) else COLORS["muted"]
+        top = _hex_to_rgb(lighten(base, 0.16))
+        bottom = _hex_to_rgb(darken(base, 0.14))
+        radius = max(0, min(self._radius, width // 2, height // 2))
+        denom = max(1, height - 1)
+        for y in range(height):
+            if y < radius:
+                dy = radius - y
+            elif y >= height - radius:
+                dy = y - (height - radius) + 1
+            else:
+                dy = 0
+            inset = radius - math.sqrt(max(0.0, radius * radius - dy * dy)) if dy else 0.0
+            t = y / denom
+            row = (top[0] + (bottom[0] - top[0]) * t, top[1] + (bottom[1] - top[1]) * t, top[2] + (bottom[2] - top[2]) * t)
+            self.create_line(inset, y, width - inset, y, fill=_rgb_to_hex(row))
+
+        cx = width / 2
+        self.create_text(cx, height * 0.24, text="LIVE TEMPERATURE", fill="#FFFFFF", font=FONTS["label"])
+        value = f"{self._temp:.1f}°C" if self._valid else "—"
+        shadow = darken(base, 0.4)
+        self.create_text(cx + 2, height * 0.5 + 2, text=value, fill=shadow, font=self._value_font)
+        self.create_text(cx, height * 0.5, text=value, fill="#FFFFFF", font=self._value_font)
+        self.create_text(cx, height * 0.76, text=self._status, fill="#FFFFFF", font=FONTS["body"])
 
 
 class ConnectionDot(tk.Canvas):
