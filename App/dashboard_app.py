@@ -7,7 +7,7 @@ from queue import Empty, Queue
 from pathlib import Path
 from time import strftime
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, font as tkfont, messagebox
 
 import customtkinter as ctk
 import matplotlib
@@ -143,6 +143,38 @@ def footer_action_sequence() -> tuple[str, ...]:
     return tuple(action for _, _, actions in FOOTER_CONTROL_GROUPS for action in actions)
 
 
+def rounded_rect_points(x1: float, y1: float, x2: float, y2: float, radius: float) -> list[float]:
+    """Control points for a smooth-spline rounded rectangle on a tk.Canvas."""
+    r = max(0.0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
+    return [
+        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+    ]
+
+
+class _FanChipHandle:
+    """Label-like handle so the fan-stage HUD chips update via ``.configure()``.
+
+    The chips are painted natively on the fan canvas rather than embedded as CTk
+    widgets — an embedded widget always paints an opaque rectangle behind its
+    rounded corners, which showed as a weird square box over the fan artwork.
+    This handle only records the latest value/colour into chip state; the canvas
+    is repainted from that state.
+    """
+
+    def __init__(self, app: "FanDashboardApp", key: str):
+        self._app = app
+        self._key = key
+
+    def configure(self, *, text: str | None = None, text_color: str | None = None, **_ignored) -> None:
+        state = self._app._chip_state[self._key]
+        if text is not None:
+            state["value"] = text
+        if text_color is not None:
+            state["color"] = text_color
+
+
 class FanDashboardApp(ctk.CTk):
     NO_PORTS_LABEL = "No devices found"
 
@@ -166,7 +198,7 @@ class FanDashboardApp(ctk.CTk):
         self.settings_store = SettingsStore(default_settings_path())
         self.settings = self.settings_store.load()
 
-        self.metric_labels: dict[str, ctk.CTkLabel] = {}
+        self.metric_labels: dict[str, ctk.CTkLabel | _FanChipHandle] = {}
         self.status_var = tk.StringVar(value="Disconnected")
         self.port_var = tk.StringVar()
         self.port_detail_var = tk.StringVar(value="Scanning for devices…")
@@ -502,24 +534,27 @@ class FanDashboardApp(ctk.CTk):
         for mode_id, button in self.rail_mode_buttons.items():
             button.set_variant("primary" if mode_id == self.mode else "secondary")
 
-    def _ensure_fan_stage_labels(self) -> dict[str, MetricTile]:
+    def _ensure_fan_stage_labels(self) -> dict[str, _FanChipHandle]:
         if hasattr(self, "fan_stage_labels"):
             return self.fan_stage_labels
         self.fan_stage_labels = {}
         self.fan_stage_metric_labels = {}
-        specs = (
+        self._chip_state: dict[str, dict[str, str]] = {}
+        self._chip_font_cache: dict[tuple, tkfont.Font] = {}
+        self._fan_chip_specs = (
             ("rpm", "RPM", self.fonts["display"]),
             ("pwm", "LOAD", self.fonts["mono_big"]),
             ("temperature", "TEMP", self.fonts["mono_big"]),
             ("state", "STATE", self.fonts["mono"]),
             ("fault", "FAULT", self.fonts["mono"]),
         )
-        for key, title, font in specs:
-            chip = MetricTile(self.fan_canvas, title, font)
-            self.fan_stage_labels[key] = chip
-            self.fan_stage_metric_labels[key] = chip.value
+        for key, _title, _font in self._fan_chip_specs:
+            self._chip_state[key] = {"value": "--", "color": COLORS["text"]}
+            handle = _FanChipHandle(self, key)
+            self.fan_stage_labels[key] = handle
+            self.fan_stage_metric_labels[key] = handle
             if key not in self.metric_labels:
-                self.metric_labels[key] = chip.value
+                self.metric_labels[key] = handle
         return self.fan_stage_labels
 
     # -------------------------------------------------------------- fan canvas
@@ -551,17 +586,46 @@ class FanDashboardApp(ctk.CTk):
             self._draw_fan_decor(canvas, cx, cy, radius)
         canvas.tag_lower("fan_art")
 
-        chips = self._ensure_fan_stage_labels()
-        positions = fan_stage_chip_layout(width, height)
-        for key, (x, y, anchor) in positions.items():
-            window = getattr(self, f"_{key}_stage_window", None)
-            if window is None:
-                window = canvas.create_window(x, y, window=chips[key], anchor=anchor, tags="stage_chip")
-                setattr(self, f"_{key}_stage_window", window)
-            else:
-                canvas.coords(window, x, y)
-        canvas.tag_raise("stage_chip")
+        self._ensure_fan_stage_labels()
+        self._fan_chip_geom = (width, height)
+        self._draw_fan_chips(width, height)
         self._draw_fan_blades()
+
+    def _measure_font(self, spec: tuple) -> tkfont.Font:
+        font = self._chip_font_cache.get(spec)
+        if font is None:
+            font = tkfont.Font(family=spec[0], size=spec[1], weight=spec[2] if len(spec) > 2 else "normal")
+            self._chip_font_cache[spec] = font
+        return font
+
+    def _draw_fan_chips(self, width: int, height: int) -> None:
+        # HUD chips drawn natively on the canvas so their rounded corners sit
+        # cleanly over the fan art (no opaque square background from an embedded
+        # widget). Repainted from chip state on every resize and telemetry tick.
+        canvas = self.fan_canvas
+        canvas.delete("stage_chip")
+        positions = fan_stage_chip_layout(width, height)
+        for key, title, value_font in self._fan_chip_specs:
+            x, y, _anchor = positions[key]
+            state = self._chip_state[key]
+            self._draw_one_chip(canvas, x, y, title, value_font, state["value"], state["color"])
+        canvas.tag_raise("stage_chip")
+
+    def _draw_one_chip(self, canvas, x, y, title, value_font, value, value_color) -> None:
+        label_font = self.fonts["label"]
+        cap_h = self._measure_font(label_font).metrics("linespace")
+        value_metrics = self._measure_font(value_font)
+        pad_x, pad_y, gap = SPACE["md"], SPACE["sm"], 2
+        inner_w = max(self._measure_font(label_font).measure(title), value_metrics.measure(value))
+        x2 = x + inner_w + pad_x * 2
+        y2 = y + pad_y * 2 + cap_h + gap + value_metrics.metrics("linespace")
+        canvas.create_polygon(
+            rounded_rect_points(x, y, x2, y2, RADIUS["tile"]),
+            smooth=True, fill=COLORS["surface_alt"], outline=COLORS["border"], width=1, tags="stage_chip",
+        )
+        text_x = x + pad_x
+        canvas.create_text(text_x, y + pad_y, text=title, anchor="nw", fill=COLORS["subtle"], font=label_font, tags="stage_chip")
+        canvas.create_text(text_x, y + pad_y + cap_h + gap, text=value, anchor="nw", fill=value_color, font=value_font, tags="stage_chip")
 
     def _draw_fan_decor(self, canvas: tk.Canvas, cx: float, cy: float, radius: float) -> None:
         # Static halo, rings and arcs. Soft sky so the fan reads as the hero.
@@ -851,6 +915,8 @@ class FanDashboardApp(ctk.CTk):
         self.metric_labels["fault"].configure(text_color=fault_color)
         if hasattr(self, "fan_stage_metric_labels"):
             self.fan_stage_metric_labels["fault"].configure(text_color=fault_color)
+        if getattr(self, "_fan_chip_geom", None) is not None:
+            self._draw_fan_chips(*self._fan_chip_geom)
         self.status_var.set(self.state_model.connection_label)
         self.connection_dot.set(True)
         self._refresh_auto_card()
