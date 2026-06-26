@@ -61,6 +61,13 @@ MAX_LOG_LINES = 120
 SIDEBAR_WIDTH = 300
 RAIL_WIDTH = 58
 
+# Fixed chart y-ranges. The traces are pinned to a constant vertical scale
+# instead of auto-rescaling per sample, so small jitter reads as small jitter
+# rather than being zoomed to fill the panel. Firmware caps RPM at ~190
+# (FAN_MAX_RPM 180) and the temperature curve spans 10–60 °C.
+SPEED_CHART_YLIM = (0.0, 200.0)
+TEMP_CHART_YLIM = (10.0, 60.0)
+
 # Fan animation: the hero fan spins at a rate proportional to live RPM and tints
 # red on a fault, so the illustration actually reports state instead of decorating.
 FAN_ANIM_MS = 50          # ~20 fps redraw of the rotating blades
@@ -300,8 +307,8 @@ class FanDashboardApp(ctk.CTk):
         speed_card.grid(row=0, column=0, sticky="nsew", pady=(0, SPACE["sm"]))
         temp_card = Card(charts, fill=COLORS["chart"], radius=RADIUS["tile"], inset=SPACE["md"])
         temp_card.grid(row=1, column=0, sticky="nsew")
-        self.speed_ax, self.speed_canvas = self._chart(speed_card.body, "Speed vs target", "RPM", surface=COLORS["chart"])
-        self.temp_ax, self.temp_canvas = self._chart(temp_card.body, "Temperature", "°C", surface=COLORS["chart"])
+        self.speed_ax, self.speed_canvas = self._chart(speed_card.body, "Speed vs target", "RPM", surface=COLORS["chart"], ylim=SPEED_CHART_YLIM)
+        self.temp_ax, self.temp_canvas = self._chart(temp_card.body, "Temperature", "°C", surface=COLORS["chart"], ylim=TEMP_CHART_YLIM)
         # Persistent line artists: refreshes call set_data() instead of clearing
         # and re-plotting the whole axes on every telemetry sample. The soft area
         # fills under each trace are re-drawn per refresh in _fill_under().
@@ -669,12 +676,17 @@ class FanDashboardApp(ctk.CTk):
         self._draw_fan_blades()
         self.after(FAN_ANIM_MS, self._animate_fan)
 
-    def _chart(self, parent, title: str, ylabel: str, surface: str = COLORS["surface"]) -> tuple[object, FigureCanvasTkAgg]:
+    def _chart(self, parent, title: str, ylabel: str, surface: str = COLORS["surface"], ylim: tuple[float, float] | None = None) -> tuple[object, FigureCanvasTkAgg]:
         text_label(parent, title, font="section", bg=surface).pack(anchor="w")
         fig = Figure(figsize=(6, 2.1), dpi=100, facecolor=surface)
         ax = fig.add_subplot(111)
         ax.set_facecolor(surface)
         ax.margins(x=0.015, y=0.2)
+        if ylim is not None:
+            # Pin the vertical scale so the trace keeps a stable baseline; only
+            # the time axis scrolls. Without this the per-sample autoscale below
+            # makes flat data look like it is swinging wildly.
+            ax.set_ylim(*ylim)
         # Spineless, ticks without marks, a faint dotted baseline grid: minimal
         # chrome so the line itself is the focus.
         ax.tick_params(colors=COLORS["subtle"], labelsize=8, length=0, pad=4)
@@ -951,7 +963,8 @@ class FanDashboardApp(ctk.CTk):
             self._speed_line.set_data(xs, speed_ys)
             self._target_line.set_data(xs, [point[2] for point in speed_points])
             self.speed_ax.relim()
-            self.speed_ax.autoscale_view()
+            # Only the time axis follows the data; the RPM scale stays fixed.
+            self.speed_ax.autoscale_view(scalex=True, scaley=False)
             self._speed_fill = self._fill_under(self.speed_ax, self._speed_fill, xs, speed_ys, COLORS["accent"])
         if temp_points:
             base = temp_points[0][0]
@@ -959,7 +972,8 @@ class FanDashboardApp(ctk.CTk):
             temp_ys = [point[1] for point in temp_points]
             self._temp_line.set_data(xs, temp_ys)
             self.temp_ax.relim()
-            self.temp_ax.autoscale_view()
+            # Only the time axis follows the data; the °C scale stays fixed.
+            self.temp_ax.autoscale_view(scalex=True, scaley=False)
             self._temp_fill = self._fill_under(self.temp_ax, self._temp_fill, xs, temp_ys, COLORS["error"])
         self.speed_canvas.draw_idle()
         self.temp_canvas.draw_idle()
